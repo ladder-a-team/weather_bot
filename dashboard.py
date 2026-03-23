@@ -221,6 +221,7 @@ def build_dashboard_data() -> dict:
 
     # Compute derived KPIs
     open_positions = []
+    closed_positions = []
     forecasts = []
     for key, m in markets.items():
         pos = m.get("position")
@@ -253,6 +254,21 @@ def build_dashboard_data() -> dict:
                 "forecast_src": pos.get("forecast_src"),
                 "sigma": pos.get("sigma"),
             })
+        elif pos and pos.get("status") == "closed":
+            closed_positions.append({
+                "city": m["city"],
+                "city_name": m.get("city_name", m["city"]),
+                "date": m["date"],
+                "unit": m.get("unit", "F"),
+                "bucket_low": pos.get("bucket_low"),
+                "bucket_high": pos.get("bucket_high"),
+                "entry_price": pos.get("entry_price"),
+                "exit_price": pos.get("exit_price"),
+                "pnl": pos.get("pnl", 0),
+                "cost": pos.get("cost"),
+                "close_reason": pos.get("close_reason", "unknown"),
+                "closed_at": pos.get("closed_at"),
+            })
 
         # Latest forecast
         snaps = m.get("forecast_snapshots", [])
@@ -270,6 +286,9 @@ def build_dashboard_data() -> dict:
                 "best": latest.get("best"),
                 "best_source": latest.get("best_source"),
             })
+
+    # Sort closed positions by closed_at descending (most recent first)
+    closed_positions.sort(key=lambda x: x.get("closed_at") or "", reverse=True)
 
     total_resolved = state.get("wins", 0) + state.get("losses", 0)
     win_rate = (state["wins"] / total_resolved * 100) if total_resolved > 0 else None
@@ -294,6 +313,7 @@ def build_dashboard_data() -> dict:
             "drawdown": round(drawdown, 1),
         },
         "open_positions": open_positions,
+        "closed_positions": closed_positions,
         "forecasts": forecasts,
         "calibration": calibration,
         "bot_status": bot_status,

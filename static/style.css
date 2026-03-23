@@ -263,6 +263,60 @@ body {
     background: var(--bg-hover);
 }
 
+/* ---- Trade History Table ---- */
+.history-table {
+    background: var(--bg-panel);
+    border-radius: 4px;
+    overflow: hidden;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.history-header, .history-row {
+    display: grid;
+    grid-template-columns: 70px 80px 110px 80px 60px;
+    padding: 4px 8px;
+    font-size: 10px;
+    align-items: center;
+}
+
+.history-header {
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    font-size: 9px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.history-body {
+    overflow-y: auto;
+    flex: 1;
+    min-height: 0;
+}
+
+.history-row {
+    color: var(--text-data);
+    border-bottom: 1px solid rgba(48, 54, 61, 0.3);
+}
+
+.reason-badge {
+    font-size: 8px;
+    padding: 1px 4px;
+    border-radius: 2px;
+    text-transform: uppercase;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+}
+
+.reason-stop_loss { background: rgba(248, 81, 73, 0.15); color: var(--accent-red); }
+.reason-trailing_stop { background: rgba(210, 153, 34, 0.15); color: var(--accent-yellow); }
+.reason-take_profit { background: rgba(63, 185, 80, 0.15); color: var(--accent-green); }
+.reason-forecast_changed { background: rgba(88, 166, 255, 0.15); color: var(--accent-blue); }
+.reason-resolved { background: rgba(63, 185, 80, 0.15); color: var(--accent-green); }
+.reason-unknown { background: rgba(139, 148, 158, 0.15); color: var(--text-secondary); }
+
 /* ---- Activity Feed ---- */
 .activity-feed {
     background: var(--bg-panel);

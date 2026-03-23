@@ -313,6 +313,37 @@
     }
 
     // =========================================================================
+    // Update Trade History
+    // =========================================================================
+    function updateHistory(trades) {
+        const body = document.getElementById("history-body");
+        const count = document.getElementById("history-count");
+        count.textContent = trades.length + " closed";
+
+        if (trades.length === 0) {
+            body.innerHTML = '<div class="empty-state">No closed trades yet</div>';
+            return;
+        }
+
+        let html = "";
+        for (const t of trades) {
+            const pnl = t.pnl ?? 0;
+            const pnlClass = pnl >= 0 ? "text-green" : "text-red";
+            const pnlSign = pnl >= 0 ? "+" : "";
+            const reason = t.close_reason || "unknown";
+
+            html += `<div class="history-row">` +
+                `<span>${t.city_name}</span>` +
+                `<span>${t.date}</span>` +
+                `<span>$${t.entry_price.toFixed(3)} → $${t.exit_price.toFixed(3)}</span>` +
+                `<span class="reason-badge reason-${reason}">${reason}</span>` +
+                `<span class="${pnlClass}">${pnlSign}$${pnl.toFixed(2)}</span>` +
+                `</div>`;
+        }
+        body.innerHTML = html;
+    }
+
+    // =========================================================================
     // Update Activity Feed
     // =========================================================================
     function updateActivity(events) {
@@ -349,6 +380,7 @@
         updateChart(data.balance_history);
         updateCityCards(data);
         updatePositions(data.open_positions || []);
+        updateHistory(data.closed_positions || []);
         updateForecasts(data.forecasts || []);
         updateCalibration(data.calibration);
         updateActivity(data.activity || []);

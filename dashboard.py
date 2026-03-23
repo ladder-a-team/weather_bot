@@ -14,7 +14,7 @@ import json
 import asyncio
 import argparse
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -153,7 +153,7 @@ def detect_changes(old_markets: dict, new_markets: dict) -> list:
     Returns a list of event dicts.
     """
     events = []
-    now_str = datetime.utcnow().isoformat() + "Z"
+    now_str = datetime.now(timezone.utc).isoformat()
 
     for stem, new_data in new_markets.items():
         old_data = old_markets.get(stem, {})
@@ -213,61 +213,79 @@ def detect_changes(old_markets: dict, new_markets: dict) -> list:
 
 
 def build_dashboard_data() -> dict:
-    """Aggregate state, markets, calibration, and bot status into one payload."""
+    """Build the complete dashboard payload."""
     state = read_state()
     markets = read_all_markets()
     calibration = read_calibration()
     bot_status = check_bot_status()
 
-    # KPIs
-    balance = state.get("balance", 0.0)
-    starting_balance = state.get("starting_balance", 0.0)
-    pnl = round(balance - starting_balance, 2)
-    pnl_pct = round((pnl / starting_balance * 100) if starting_balance else 0.0, 2)
+    # Compute derived KPIs
+    open_positions = []
+    forecasts = []
+    for key, m in markets.items():
+        pos = m.get("position")
+        if pos and pos.get("status") == "open":
+            open_positions.append({
+                "city": m["city"],
+                "city_name": m.get("city_name", m["city"]),
+                "date": m["date"],
+                "unit": m.get("unit", "F"),
+                "bucket_low": pos.get("bucket_low"),
+                "bucket_high": pos.get("bucket_high"),
+                "entry_price": pos.get("entry_price"),
+                "ev": pos.get("ev"),
+                "kelly": pos.get("kelly"),
+                "cost": pos.get("cost"),
+                "pnl": pos.get("pnl"),
+                "forecast_src": pos.get("forecast_src"),
+                "sigma": pos.get("sigma"),
+            })
 
-    total_trades = state.get("total_trades", 0)
-    wins = state.get("wins", 0)
-    losses = state.get("losses", 0)
-    settled = wins + losses
-    win_rate = round((wins / settled * 100) if settled > 0 else 0.0, 1)
+        # Latest forecast
+        snaps = m.get("forecast_snapshots", [])
+        if snaps:
+            latest = snaps[-1]
+            forecasts.append({
+                "city": m["city"],
+                "city_name": m.get("city_name", m["city"]),
+                "date": m["date"],
+                "unit": m.get("unit", "F"),
+                "horizon": latest.get("horizon"),
+                "ecmwf": latest.get("ecmwf"),
+                "hrrr": latest.get("hrrr"),
+                "metar": latest.get("metar"),
+                "best": latest.get("best"),
+                "best_source": latest.get("best_source"),
+            })
 
-    peak_balance = state.get("peak_balance", starting_balance or balance)
-    drawdown = round(((peak_balance - balance) / peak_balance * 100) if peak_balance else 0.0, 2)
+    total_resolved = state.get("wins", 0) + state.get("losses", 0)
+    win_rate = (state["wins"] / total_resolved * 100) if total_resolved > 0 else None
+    pnl = state.get("balance", 0) - state.get("starting_balance", 0)
+    peak = state.get("peak_balance", 0)
+    drawdown = ((state.get("balance", 0) - peak) / peak * 100) if peak > 0 else 0
 
-    # Open positions count
-    open_count = sum(
-        1 for m in markets.values()
-        if m.get("status") == "open" and m.get("position") is not None
-    )
-
-    # Track balance history (append if balance changed)
-    now_str = datetime.utcnow().isoformat() + "Z"
+    # Track balance history
+    balance = state.get("balance", 0)
+    now_str = datetime.now(timezone.utc).isoformat()
     if not balance_history or balance_history[-1]["balance"] != balance:
         balance_history.append({"ts": now_str, "balance": balance})
-        # Keep last 500 points
-        if len(balance_history) > 500:
-            del balance_history[:-500]
 
     return {
-        "ts": now_str,
         "state": state,
-        "kpis": {
-            "balance": balance,
-            "pnl": pnl,
-            "pnl_pct": pnl_pct,
-            "total_trades": total_trades,
-            "wins": wins,
-            "losses": losses,
-            "win_rate": win_rate,
-            "open_count": open_count,
-            "peak_balance": peak_balance,
-            "drawdown": drawdown,
+        "kpi": {
+            "balance": state.get("balance", 0),
+            "pnl": round(pnl, 2),
+            "open_count": len(open_positions),
+            "win_rate": round(win_rate, 1) if win_rate is not None else None,
+            "peak_balance": peak,
+            "drawdown": round(drawdown, 1),
         },
-        "balance_history": balance_history[-200:],
-        "activity_feed": list(activity_feed),
-        "markets": markets,
+        "open_positions": open_positions,
+        "forecasts": forecasts,
         "calibration": calibration,
         "bot_status": bot_status,
+        "balance_history": balance_history,
+        "activity": list(activity_feed),
         "locations": LOCATIONS,
     }
 
@@ -295,15 +313,8 @@ templates = Jinja2Templates(directory=str(_templates_dir))
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """Serve the main dashboard page."""
-    index_file = _templates_dir / "index.html"
-    if index_file.exists():
-        return templates.TemplateResponse("index.html", {"request": request})
-    # Fallback minimal HTML when template not yet created
-    return HTMLResponse(
-        content="<html><body><h1>WeatherBet Dashboard</h1>"
-                "<p>Templates not yet installed. API is live at <a href='/api/dashboard'>/api/dashboard</a>.</p>"
-                "</body></html>"
-    )
+    data = build_dashboard_data()
+    return templates.TemplateResponse(request=request, name="index.html", context={"data": data})
 
 
 @app.get("/api/state")

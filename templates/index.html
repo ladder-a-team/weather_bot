@@ -150,18 +150,18 @@
         </div>
         <div class="positions-table">
             <div class="table-header">
-                <span>City</span><span>Bucket</span><span>Entry</span><span>EV</span><span>Kelly</span><span>P&L</span>
+                <span>City</span><span>Bucket</span><span>Entry → Now</span><span>EV</span><span>Kelly</span><span>P&L</span>
             </div>
             <div class="table-body" id="positions-body">
                 {% for p in data.open_positions %}
                 <div class="table-row">
                     <span>{{ p.city.upper()[:3] }}</span>
                     <span>{{ p.bucket_low }}-{{ p.bucket_high }}°{{ p.unit }}</span>
-                    <span>${{ "%.3f"|format(p.entry_price) }}</span>
+                    <span>${{ "%.3f"|format(p.entry_price) }} → ${{ "%.3f"|format(p.current_price) }}</span>
                     <span class="text-green">+{{ "%.2f"|format(p.ev) }}</span>
                     <span>{{ "%.2f"|format(p.kelly) }}</span>
-                    <span class="{{ 'text-green' if p.pnl and p.pnl >= 0 else 'text-red' if p.pnl else 'text-muted' }}">
-                        {{ ("$%.2f"|format(p.pnl)) if p.pnl else "—" }}
+                    <span class="{{ 'text-green' if p.pnl >= 0 else 'text-red' }}">
+                        {{ "+" if p.pnl >= 0 else "" }}${{ "%.2f"|format(p.pnl) }}
                     </span>
                 </div>
                 {% endfor %}

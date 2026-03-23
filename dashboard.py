@@ -225,6 +225,18 @@ def build_dashboard_data() -> dict:
     for key, m in markets.items():
         pos = m.get("position")
         if pos and pos.get("status") == "open":
+            # Calculate unrealized PnL from current market price
+            entry_price = pos.get("entry_price", 0)
+            shares = pos.get("shares", 0)
+            current_price = entry_price  # fallback
+            market_id = pos.get("market_id")
+            if market_id:
+                for o in m.get("all_outcomes", []):
+                    if o.get("market_id") == market_id:
+                        current_price = o.get("price", entry_price)
+                        break
+            unrealized_pnl = round((current_price - entry_price) * shares, 2)
+
             open_positions.append({
                 "city": m["city"],
                 "city_name": m.get("city_name", m["city"]),
@@ -232,11 +244,12 @@ def build_dashboard_data() -> dict:
                 "unit": m.get("unit", "F"),
                 "bucket_low": pos.get("bucket_low"),
                 "bucket_high": pos.get("bucket_high"),
-                "entry_price": pos.get("entry_price"),
+                "entry_price": entry_price,
+                "current_price": current_price,
                 "ev": pos.get("ev"),
                 "kelly": pos.get("kelly"),
                 "cost": pos.get("cost"),
-                "pnl": pos.get("pnl"),
+                "pnl": unrealized_pnl,
                 "forecast_src": pos.get("forecast_src"),
                 "sigma": pos.get("sigma"),
             })

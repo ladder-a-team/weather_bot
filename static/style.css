@@ -276,7 +276,7 @@ body {
 
 .history-header, .history-row {
     display: grid;
-    grid-template-columns: 80px 90px 130px 1fr 70px;
+    grid-template-columns: 80px 90px 130px 120px 70px;
     gap: 8px;
     padding: 4px 8px;
     font-size: 10px;

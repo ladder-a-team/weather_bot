@@ -65,7 +65,7 @@ Every Polymarket weather market resolves on a specific airport station. NYC reso
 ```bash
 git clone https://github.com/alteregoeth-ai/weatherbot
 cd weatherbot
-pip install requests
+pip install -r requirements.txt
 ```
 
 Create `config.json` in the project folder:
@@ -91,11 +91,44 @@ Get a free Visual Crossing API key at visualcrossing.com — used to fetch actua
 ---
 
 ## Usage
+
+### Bot
 ```bash
-python weatherbet.py           # start the bot — scans every hour
-python weatherbet.py status    # balance and open positions
-python weatherbet.py report    # full breakdown of all resolved markets
+python bot_v2.py           # start the bot — scans every hour
+python bot_v2.py status    # balance and open positions
+python bot_v2.py report    # full breakdown of all resolved markets
+
+# Run in background with real-time logging
+nohup python -u bot_v2.py >> nohup.out 2>&1 &
+tail -f nohup.out          # follow the log
 ```
+
+### Dashboard
+
+A real-time Bloomberg-style operations center that reads the bot's JSON files and displays everything in a single-page UI.
+
+```bash
+python dashboard.py                    # start on default port 8050
+python dashboard.py --port 9000        # custom port
+```
+
+Open `http://localhost:8050` in your browser.
+
+**Features:**
+- **KPI Strip** — Starting balance, open positions cost, realized/unrealized P&L, cash available, win rate, drawdown
+- **World Map** — Interactive Leaflet.js map with 20 city markers showing forecast, EV, and position status
+- **Open Positions** — Live table with entry → current price and unrealized P&L
+- **Trade History** — Closed positions with close reason (stop_loss, trailing_stop, take_profit, forecast_changed) and realized P&L
+- **Forecast Sources** — Side-by-side comparison of ECMWF, HRRR, and METAR for all cities
+- **Calibration** — Forecast accuracy (sigma) per city/source (appears after enough resolved markets)
+- **Activity Feed** — Real-time event log reconstructed from market file changes
+- **Balance Chart** — Equity history over time
+
+**Real-time updates:** The dashboard watches the `data/` directory for file changes and pushes updates via WebSocket. Falls back to 30-second polling if WebSocket disconnects.
+
+**Tech stack:** FastAPI, Jinja2, Chart.js, Leaflet.js — no Node.js or build tools required.
+
+**Note:** The dashboard calculates all KPIs directly from market JSON files rather than trusting `state.json`, ensuring accurate financial data.
 
 ---
 

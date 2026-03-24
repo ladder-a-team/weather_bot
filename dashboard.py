@@ -209,7 +209,7 @@ def build_dashboard_data() -> dict:
     for key, m in markets.items():
         pos = m.get("position")
         if pos and pos.get("status") == "open":
-            # Calculate unrealized PnL from current market price
+            # Calculate unrealized PnL using bid price (what you'd actually sell at)
             entry_price = pos.get("entry_price", 0)
             shares = pos.get("shares", 0)
             current_price = entry_price  # fallback
@@ -217,7 +217,8 @@ def build_dashboard_data() -> dict:
             if market_id:
                 for o in m.get("all_outcomes", []):
                     if o.get("market_id") == market_id:
-                        current_price = o.get("price", entry_price)
+                        # Use bid (sell price), fall back to price
+                        current_price = o.get("bid", o.get("price", entry_price))
                         break
             unrealized_pnl = round((current_price - entry_price) * shares, 2)
 

@@ -274,46 +274,42 @@ def build_dashboard_data() -> dict:
     # Sort closed positions by closed_at descending (most recent first)
     closed_positions.sort(key=lambda x: x.get("closed_at") or "", reverse=True)
 
-    # Calculate real balance by replaying all trades from market files
+    # Calculate KPIs from real trade data
     starting = state.get("starting_balance", 1000.0)
-    all_costs = sum(p.get("cost", 0) for p in open_positions)  # open position costs
-    all_costs += sum(p.get("cost", 0) for p in closed_positions)  # closed position costs
-    returned = sum(p.get("cost", 0) + p.get("pnl", 0) for p in closed_positions)
-    real_balance = starting - all_costs + returned
 
-    # Replay events chronologically to find peak balance
-    events = []
-    for key, m in markets.items():
-        pos = m.get("position")
-        if not pos:
-            continue
-        events.append(("buy", pos.get("opened_at", ""), -pos.get("cost", 0)))
-        if pos.get("status") == "closed":
-            events.append(("close", pos.get("closed_at", ""), pos.get("cost", 0) + (pos.get("pnl", 0) or 0)))
-    events.sort(key=lambda x: x[1])
-    replay_balance = starting
-    peak = starting
-    for _, _, amount in events:
-        replay_balance += amount
-        if replay_balance > peak:
-            peak = replay_balance
-
-    drawdown = ((real_balance - peak) / peak * 100) if peak > 0 else 0
+    realized_pnl = round(sum(p["pnl"] for p in closed_positions), 2)
+    unrealized_pnl = round(sum(p["pnl"] for p in open_positions), 2)
+    open_cost = round(sum(p.get("cost", 0) for p in open_positions), 2)
+    cash = round(starting + realized_pnl - open_cost, 2)
+    equity = round(cash + open_cost + unrealized_pnl, 2)
 
     # Win rate from closed trades
     wins = sum(1 for p in closed_positions if p.get("pnl", 0) > 0)
     total_closed = len(closed_positions)
     win_rate = (wins / total_closed * 100) if total_closed > 0 else None
 
-    realized_pnl = round(sum(p["pnl"] for p in closed_positions), 2)
-    unrealized_pnl = round(sum(p["pnl"] for p in open_positions), 2)
-    open_cost = round(sum(p.get("cost", 0) for p in open_positions), 2)
-    cash = round(starting + realized_pnl - open_cost, 2)
+    # Replay equity chronologically to find peak
+    events = []
+    for key, m in markets.items():
+        pos = m.get("position")
+        if pos and pos.get("status") == "closed" and pos.get("closed_at"):
+            events.append((pos["closed_at"], pos.get("pnl", 0) or 0))
+    events.sort(key=lambda x: x[0])
+    running_equity = starting
+    peak = starting
+    for _, pnl_val in events:
+        running_equity += pnl_val
+        if running_equity > peak:
+            peak = running_equity
+    if equity > peak:
+        peak = equity
 
-    # Track balance history
+    drawdown = ((equity - peak) / peak * 100) if peak > 0 else 0
+
+    # Track balance history (equity over time)
     now_str = datetime.now(timezone.utc).isoformat()
-    if not balance_history or balance_history[-1]["balance"] != cash:
-        balance_history.append({"ts": now_str, "balance": cash})
+    if not balance_history or balance_history[-1]["balance"] != equity:
+        balance_history.append({"ts": now_str, "balance": equity})
 
     return {
         "state": state,

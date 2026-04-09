@@ -4,6 +4,11 @@ Automated weather market trading bot for Polymarket. Finds mispriced temperature
 
 No SDK. No black box. Pure Python.
 
+> **Upstream / source repository:** <https://github.com/alteregoeth-ai/weatherbot>
+> This fork (`ladder-a-team/weather_bot`) is maintained independently. See
+> [`AGENTS.md`](AGENTS.md) for how AI agents working on this repo should
+> periodically check upstream for new features.
+
 ---
 
 ## Versions

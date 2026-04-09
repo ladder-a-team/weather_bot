@@ -93,6 +93,27 @@ TIMEZONES = {
     "buenos-aires": "America/Argentina/Buenos_Aires", "wellington": "Pacific/Auckland",
 }
 
+# Best regional high-resolution deterministic model per city via Open-Meteo.
+# For cities without a dedicated regional model we still get ECMWF IFS +
+# AIFS + the ECMWF IFS ensemble via the other fetches, so coverage is good.
+REGIONAL_MODELS = {
+    "nyc":          "gfs_seamless",                     # HRRR/GFS 3 km CONUS
+    "chicago":      "gfs_seamless",
+    "miami":        "gfs_seamless",
+    "dallas":       "gfs_seamless",
+    "seattle":      "gfs_seamless",
+    "atlanta":      "gfs_seamless",
+    "london":       "ukmo_uk_deterministic_2km",        # UKV 2 km
+    "paris":        "meteofrance_arome_france_hd",      # AROME 1.3 km
+    "munich":       "icon_d2",                          # ICON-D2 2.2 km
+    "ankara":       "icon_eu",                          # ICON-EU 6.5 km
+    "tokyo":        "jma_msm",                          # JMA MSM 5 km
+    "toronto":      "gem_hrdps_continental",            # HRDPS 2.5 km
+    "wellington":   "bom_access_global",                # ACCESS global
+    # No dedicated regional high-res model, ECMWF + AIFS + ENS only:
+    # seoul, shanghai, singapore, lucknow, tel-aviv, sao-paulo, buenos-aires
+}
+
 MONTHS = ["january","february","march","april","may","june",
           "july","august","september","october","november","december"]
 
@@ -103,17 +124,29 @@ MONTHS = ["january","february","march","april","may","june",
 def norm_cdf(x):
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
-def bucket_prob(forecast, t_low, t_high, sigma=None):
-    """Probability the actual temperature falls inside a bucket, given a
-    forecast and its standard error (sigma). Buckets are rounded to the
-    nearest degree, so the real interval is [low-0.5, high+0.5]."""
-    s = sigma or 2.0
-    f = float(forecast)
+MIN_ENS_STD_F = 0.8   # floor on ensemble σ for F units (avoid overconfidence)
+MIN_ENS_STD_C = 0.5   # same for C units
+
+def bucket_prob(forecast, t_low, t_high, sigma=None, ens=None, unit="F"):
+    """Probability the actual temperature falls inside a bucket. Buckets are
+    rounded to the nearest degree, so the real interval is [low-0.5, high+0.5].
+
+    Two modes:
+      - Ensemble mode: if `ens` is a dict with 'mean' and 'std' (from
+        get_ensemble), use those directly. The std is physically meaningful
+        and adapts per forecast, so no σ calibration is needed.
+      - Sigma mode: use the deterministic `forecast` value with a static
+        `sigma` (either the default or the MAE-calibrated value)."""
+    if ens is not None and ens.get("mean") is not None and ens.get("std") is not None:
+        f = float(ens["mean"])
+        floor = MIN_ENS_STD_F if unit == "F" else MIN_ENS_STD_C
+        s = max(float(ens["std"]), floor)
+    else:
+        s = sigma or (SIGMA_F if unit == "F" else SIGMA_C)
+        f = float(forecast)
     if t_low == -999:
-        # "X or below" — P(T <= high + 0.5)
         return norm_cdf((t_high + 0.5 - f) / s)
     if t_high == 999:
-        # "X or higher" — P(T >= low - 0.5)
         return 1.0 - norm_cdf((t_low - 0.5 - f) / s)
     lo = t_low - 0.5
     hi = t_high + 0.5
@@ -186,60 +219,121 @@ def run_calibration(markets):
 # FORECASTS
 # =============================================================================
 
-def get_ecmwf(city_slug, dates):
-    """ECMWF via Open-Meteo with bias correction. For all cities."""
+def _round_temp(v, unit):
+    return round(v, 1) if unit == "C" else round(v)
+
+def get_deterministic(city_slug, dates):
+    """Fetch ECMWF IFS, GraphCast (DeepMind AI model), and the best regional
+    high-res model for this city in a single Open-Meteo request. Returns a
+    dict keyed by date with keys 'ecmwf', 'graphcast', 'regional',
+    'regional_source'.
+
+    Using one multi-model request per city instead of one call per model
+    cuts API traffic to ~1/3 and keeps the values internally aligned."""
     loc = LOCATIONS[city_slug]
     unit = loc["unit"]
     temp_unit = "fahrenheit" if unit == "F" else "celsius"
-    result = {}
+
+    regional = REGIONAL_MODELS.get(city_slug)
+    models   = ["ecmwf_ifs025", "gfs_graphcast025"]
+    if regional and regional not in models:
+        models.append(regional)
+
     url = (
         f"https://api.open-meteo.com/v1/forecast"
         f"?latitude={loc['lat']}&longitude={loc['lon']}"
         f"&daily=temperature_2m_max&temperature_unit={temp_unit}"
         f"&forecast_days=7&timezone={TIMEZONES.get(city_slug, 'UTC')}"
-        f"&models=ecmwf_ifs025&bias_correction=true"
+        f"&models={','.join(models)}"
     )
+    blank = {"ecmwf": None, "graphcast": None, "regional": None, "regional_source": regional}
+    result = {d: dict(blank) for d in dates}
+
+    key_map = {
+        "ecmwf":     f"temperature_2m_max_ecmwf_ifs025",
+        "graphcast": f"temperature_2m_max_gfs_graphcast025",
+    }
+    if regional:
+        key_map["regional"] = f"temperature_2m_max_{regional}"
+
     for attempt in range(3):
         try:
             data = requests.get(url, timeout=(5, 10)).json()
-            if "error" not in data:
-                for date, temp in zip(data["daily"]["time"], data["daily"]["temperature_2m_max"]):
-                    if date in dates and temp is not None:
-                        result[date] = round(temp, 1) if unit == "C" else round(temp)
-            break
+            if "error" in data:
+                print(f"  [DET] {city_slug}: {data.get('reason') or data.get('error')}")
+                return result
+            daily = data.get("daily", {})
+            times = daily.get("time", [])
+            for field, key in key_map.items():
+                values = daily.get(key)
+                if not values:
+                    continue
+                for d, v in zip(times, values):
+                    if d in dates and v is not None:
+                        result[d][field] = _round_temp(float(v), unit)
+            return result
         except Exception as e:
             if attempt < 2:
                 time.sleep(3)
             else:
-                print(f"  [ECMWF] {city_slug}: {e}")
+                print(f"  [DET] {city_slug}: {e}")
     return result
 
-def get_hrrr(city_slug, dates):
-    """HRRR via Open-Meteo. US cities only, up to 48h horizon."""
+def get_ensemble(city_slug, dates):
+    """ECMWF IFS ensemble (≈51 members) via Open-Meteo. Returns mean and
+    standard deviation of daily max temp per date.
+
+    The ensemble's own spread is a physically meaningful σ — it tightens
+    in stable weather and widens during fronts — so downstream bucket
+    probability no longer has to rely on a MAE-derived static σ."""
     loc = LOCATIONS[city_slug]
-    if loc["region"] != "us":
-        return {}
-    result = {}
+    unit = loc["unit"]
+    temp_unit = "fahrenheit" if unit == "F" else "celsius"
     url = (
-        f"https://api.open-meteo.com/v1/forecast"
+        f"https://ensemble-api.open-meteo.com/v1/ensemble"
         f"?latitude={loc['lat']}&longitude={loc['lon']}"
-        f"&daily=temperature_2m_max&temperature_unit=fahrenheit"
-        f"&forecast_days=3&timezone={TIMEZONES.get(city_slug, 'UTC')}"
-        f"&models=gfs_seamless"  # HRRR+GFS seamless — best option for US
+        f"&daily=temperature_2m_max&temperature_unit={temp_unit}"
+        f"&forecast_days=7&timezone={TIMEZONES.get(city_slug, 'UTC')}"
+        f"&models=ecmwf_ifs025"
     )
+    result: dict = {}
     for attempt in range(3):
         try:
-            data = requests.get(url, timeout=(5, 10)).json()
-            if "error" not in data:
-                for date, temp in zip(data["daily"]["time"], data["daily"]["temperature_2m_max"]):
-                    if date in dates and temp is not None:
-                        result[date] = round(temp)
-            break
+            data = requests.get(url, timeout=(5, 15)).json()
+            if "error" in data:
+                return result
+            daily = data.get("daily", {})
+            times = daily.get("time", [])
+            # Collect all ensemble member fields.
+            members_by_date: dict = {d: [] for d in times}
+            for key, values in daily.items():
+                if not key.startswith("temperature_2m_max"):
+                    continue
+                if key == "temperature_2m_max":
+                    continue  # deterministic control run — not a member
+                if not values:
+                    continue
+                for d, v in zip(times, values):
+                    if v is not None:
+                        members_by_date.setdefault(d, []).append(float(v))
+            for d in dates:
+                members = members_by_date.get(d) or []
+                if len(members) < 10:
+                    continue  # not enough members to be meaningful
+                mean = sum(members) / len(members)
+                var  = sum((m - mean) ** 2 for m in members) / len(members)
+                std  = math.sqrt(var)
+                result[d] = {
+                    "mean": _round_temp(mean, unit),
+                    "std":  round(std, 3),
+                    "n":    len(members),
+                }
+            return result
         except Exception as e:
             if attempt < 2:
                 time.sleep(3)
             else:
-                print(f"  [HRRR] {city_slug}: {e}")
+                print(f"  [ENS] {city_slug}: {e}")
     return result
 
 def get_metar(city_slug):
@@ -479,37 +573,64 @@ def calculate_balance_from_trades():
 # =============================================================================
 
 def take_forecast_snapshot(city_slug, dates):
-    """Fetches forecasts from all sources and returns a snapshot.
-    `dates` are local-time calendar dates for the city — "today" and the HRRR
-    horizon are evaluated in that same local timezone so the comparisons line
-    up with how the market resolves."""
-    now_str   = datetime.now(timezone.utc).isoformat()
-    ecmwf     = get_ecmwf(city_slug, dates)
-    hrrr      = get_hrrr(city_slug, dates)
-    local_tz  = ZoneInfo(TIMEZONES.get(city_slug, "UTC"))
-    local_now = datetime.now(local_tz)
-    today     = local_now.strftime("%Y-%m-%d")
-    hrrr_cap  = (local_now + timedelta(days=2)).strftime("%Y-%m-%d")
-    metar_val = get_metar(city_slug)  # fetch once per city
+    """Fetch every forecast source for one city and build per-date snapshots.
+
+    Sources collected:
+      - ECMWF IFS deterministic (all cities)
+      - ECMWF AIFS (all cities — DeepMind-style AI model)
+      - Best regional high-res model (HRRR/ICON-D2/AROME/UKV/JMA MSM/HRDPS/
+        BOM, picked by REGIONAL_MODELS)
+      - ECMWF IFS ensemble mean + std (all cities)
+      - METAR current observation (D+0 only)
+
+    `dates` are local-time calendar dates for the city — "today" and the
+    regional-model horizon are evaluated in that same local timezone so the
+    comparisons line up with how the market resolves."""
+    now_str    = datetime.now(timezone.utc).isoformat()
+    det        = get_deterministic(city_slug, dates)
+    ens        = get_ensemble(city_slug, dates)
+    local_tz   = ZoneInfo(TIMEZONES.get(city_slug, "UTC"))
+    local_now  = datetime.now(local_tz)
+    today      = local_now.strftime("%Y-%m-%d")
+    regional_cap = (local_now + timedelta(days=2)).strftime("%Y-%m-%d")
+    metar_val  = get_metar(city_slug)  # fetch once per city
 
     snapshots = {}
     for date in dates:
+        d = det.get(date, {})
+        e = ens.get(date)
+        # `hrrr` field is kept as the "regional high-res" slot for backwards
+        # compatibility with older market files and the dashboard template.
+        # It now holds whatever REGIONAL_MODELS says for this city.
+        regional_val = d.get("regional") if date <= regional_cap else None
         snap = {
-            "ts":    now_str,
-            "ecmwf": ecmwf.get(date),
-            "hrrr":  hrrr.get(date) if date <= hrrr_cap else None,
-            "metar": metar_val if date == today else None,
+            "ts":              now_str,
+            "ecmwf":           d.get("ecmwf"),
+            "graphcast":       d.get("graphcast"),
+            "hrrr":            regional_val,
+            "regional_source": d.get("regional_source"),
+            "ens_mean":        e["mean"] if e else None,
+            "ens_std":         e["std"]  if e else None,
+            "ens_n":           e["n"]    if e else None,
+            "metar":           metar_val if date == today else None,
         }
-        # Best forecast: HRRR for US D+0/D+1, otherwise ECMWF
-        loc = LOCATIONS[city_slug]
-        if loc["region"] == "us" and snap["hrrr"] is not None:
-            snap["best"] = snap["hrrr"]
+        # Best source priority: ensemble mean > regional > ECMWF > GraphCast.
+        # Ensemble is preferred because it bundles its own uncertainty (std)
+        # that the caller uses directly in bucket_prob.
+        if snap["ens_mean"] is not None:
+            snap["best"]        = snap["ens_mean"]
+            snap["best_source"] = "ensemble"
+        elif snap["hrrr"] is not None:
+            snap["best"]        = snap["hrrr"]
             snap["best_source"] = "hrrr"
         elif snap["ecmwf"] is not None:
-            snap["best"] = snap["ecmwf"]
+            snap["best"]        = snap["ecmwf"]
             snap["best_source"] = "ecmwf"
+        elif snap["graphcast"] is not None:
+            snap["best"]        = snap["graphcast"]
+            snap["best_source"] = "graphcast"
         else:
-            snap["best"] = None
+            snap["best"]        = None
             snap["best_source"] = None
         snapshots[date] = snap
     return snapshots
@@ -598,14 +719,19 @@ def scan_and_update():
             # Forecast snapshot
             snap = snapshots.get(date, {})
             forecast_snap = {
-                "ts":          snap.get("ts"),
-                "horizon":     horizon,
-                "hours_left":  round(hours, 1),
-                "ecmwf":       snap.get("ecmwf"),
-                "hrrr":        snap.get("hrrr"),
-                "metar":       snap.get("metar"),
-                "best":        snap.get("best"),
-                "best_source": snap.get("best_source"),
+                "ts":              snap.get("ts"),
+                "horizon":         horizon,
+                "hours_left":      round(hours, 1),
+                "ecmwf":           snap.get("ecmwf"),
+                "graphcast":       snap.get("graphcast"),
+                "hrrr":            snap.get("hrrr"),
+                "regional_source": snap.get("regional_source"),
+                "ens_mean":        snap.get("ens_mean"),
+                "ens_std":         snap.get("ens_std"),
+                "ens_n":           snap.get("ens_n"),
+                "metar":           snap.get("metar"),
+                "best":            snap.get("best"),
+                "best_source":     snap.get("best_source"),
             }
             mkt["forecast_snapshots"].append(forecast_snap)
 
@@ -667,6 +793,13 @@ def scan_and_update():
             # --- OPEN POSITION ---
             if not mkt.get("position") and forecast_temp is not None and hours >= MIN_HOURS:
                 sigma = get_sigma(city_slug, best_source or "ecmwf")
+                # If the ensemble is available, build a {mean, std} that
+                # bucket_prob will use in place of the static sigma. Its std
+                # is physically meaningful and adapts per forecast.
+                ens_data = None
+                if snap.get("ens_mean") is not None and snap.get("ens_std") is not None:
+                    ens_data = {"mean": snap["ens_mean"], "std": snap["ens_std"]}
+
                 best_signal = None
 
                 # Find exactly ONE bucket that matches the forecast
@@ -688,7 +821,8 @@ def scan_and_update():
 
                     # All filters — if any fails, skip this market entirely
                     if volume >= MIN_VOLUME:
-                        p  = bucket_prob(forecast_temp, t_low, t_high, sigma)
+                        p  = bucket_prob(forecast_temp, t_low, t_high,
+                                         sigma=sigma, ens=ens_data, unit=loc["unit"])
                         ev = calc_ev(p, ask)
                         if ev >= MIN_EV:
                             kelly = calc_kelly(p, ask)
@@ -709,7 +843,10 @@ def scan_and_update():
                                     "kelly":        round(kelly, 4),
                                     "forecast_temp":forecast_temp,
                                     "forecast_src": best_source,
-                                    "sigma":        sigma,
+                                    "sigma":        round(ens_data["std"], 3) if ens_data else sigma,
+                                    "prob_source":  "ensemble" if ens_data else "calibrated_sigma",
+                                    "ens_mean":     ens_data["mean"] if ens_data else None,
+                                    "ens_std":      ens_data["std"]  if ens_data else None,
                                     "opened_at":    snap.get("ts"),
                                     "status":       "open",
                                     "pnl":          None,

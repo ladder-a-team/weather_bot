@@ -322,16 +322,21 @@ def build_dashboard_data() -> dict:
         if snaps:
             latest = snaps[-1]
             forecasts.append({
-                "city": m["city"],
-                "city_name": m.get("city_name", m["city"]),
-                "date": m["date"],
-                "unit": m.get("unit", "F"),
-                "horizon": latest.get("horizon"),
-                "ecmwf": latest.get("ecmwf"),
-                "hrrr": latest.get("hrrr"),
-                "metar": latest.get("metar"),
-                "best": latest.get("best"),
-                "best_source": latest.get("best_source"),
+                "city":            m["city"],
+                "city_name":       m.get("city_name", m["city"]),
+                "date":            m["date"],
+                "unit":            m.get("unit", "F"),
+                "horizon":         latest.get("horizon"),
+                "ecmwf":           latest.get("ecmwf"),
+                "graphcast":       latest.get("graphcast"),
+                "hrrr":            latest.get("hrrr"),
+                "regional_source": latest.get("regional_source"),
+                "ens_mean":        latest.get("ens_mean"),
+                "ens_std":         latest.get("ens_std"),
+                "ens_n":           latest.get("ens_n"),
+                "metar":           latest.get("metar"),
+                "best":            latest.get("best"),
+                "best_source":     latest.get("best_source"),
             })
 
     # Sort closed positions by closed_at descending (most recent first)

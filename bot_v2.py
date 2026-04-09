@@ -126,8 +126,12 @@ MONTHS = ["january","february","march","april","may","june",
 def norm_cdf(x):
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
-MIN_ENS_STD_F = 0.8   # floor on ensemble σ for F units (avoid overconfidence)
-MIN_ENS_STD_C = 0.5   # same for C units
+MIN_ENS_STD_F = 1.5   # floor on ensemble σ for F units (avoid overconfidence)
+MIN_ENS_STD_C = 1.0   # same for C units
+# Previous floors (0.8 / 0.5) produced trades with predicted p=0.65 that
+# immediately stopped out at -35%. Raising the floor sacrifices a bit of
+# edge on genuinely stable forecasts but kills the "ensemble clusters
+# unrealistically tight at D+1 and the bot over-bets" failure mode.
 
 def bucket_prob(forecast, t_low, t_high, sigma=None, ens=None, unit="F"):
     """Probability the actual temperature falls inside a bucket. Buckets are
@@ -1082,6 +1086,22 @@ MONITOR_INTERVAL   = 600  # monitor positions every 10 minutes
 RESCAN_POLL_SECS   = 5    # check for the rescan trigger file this often
 RESCAN_REQUEST_FILE = DATA_DIR / "rescan.request"
 
+def default_stop_loss(entry_price: float, hours_left: float) -> float:
+    """Base stop-loss price, hour-aware. Mirrors the tiered structure of
+    the take-profit logic: when we're close to resolution, noise has had
+    time to die down and a real YES drop is meaningful — tight stop. When
+    the forecast horizon is long (D+2, D+3), YES can swing ±30% on pure
+    noise, so the stop has to be loose enough not to eat every trade.
+
+    Previously a flat 20% stop across all horizons stopped out 5 of 5
+    closed trades at -23% to -45% realized before markets had time to
+    actually move toward resolution."""
+    if hours_left < 24:
+        return round(entry_price * 0.75, 4)   # 25% stop — near resolution
+    if hours_left < 48:
+        return round(entry_price * 0.65, 4)   # 35% stop — medium horizon
+    return round(entry_price * 0.55, 4)       # 45% stop — long horizon
+
 def consume_rescan_request() -> bool:
     """Return True (and remove the trigger) if a rescan was requested via
     the data/rescan.request file. The dashboard creates this file when the
@@ -1148,12 +1168,15 @@ def monitor_positions():
             continue
 
         entry = pos["entry_price"]
-        stop  = pos.get("stop_price", entry * 0.80)
         city_name = LOCATIONS.get(mkt["city"], {}).get("name", mkt["city"])
 
-        # Hours left to resolution
+        # Hours left to resolution — drives both take-profit and the base
+        # stop-loss tier.
         end_date = mkt.get("event_end_date", "")
         hours_left = hours_to_resolution(end_date) if end_date else 999.0
+
+        # Trailing stop (if any) wins over the base hour-aware floor.
+        stop = pos.get("stop_price") or default_stop_loss(entry, hours_left)
 
         # Take-profit threshold based on hours to resolution
         if hours_left < 24:

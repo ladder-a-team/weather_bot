@@ -14,13 +14,14 @@ import json
 import asyncio
 import argparse
 from collections import deque
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 import psutil
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -35,6 +36,12 @@ DATA_DIR         = BASE_DIR / "data"
 STATE_FILE       = DATA_DIR / "state.json"
 MARKETS_DIR      = DATA_DIR / "markets"
 CALIBRATION_FILE = DATA_DIR / "calibration.json"
+HEARTBEAT_FILE   = DATA_DIR / "heartbeat.json"
+
+# If the heartbeat is older than this, we consider the bot dead. The bot
+# writes a heartbeat after every monitor tick (default 10 min) and every
+# scan — 20 min gives us one full missed tick of grace.
+HEARTBEAT_STALE_SECONDS = 20 * 60
 
 # =============================================================================
 # LOCATIONS  (mirrored from bot_v2.py)
@@ -67,10 +74,11 @@ LOCATIONS = {
 # IN-MEMORY STATE
 # =============================================================================
 
-balance_history: list = []          # [{ts, balance}, ...]
-activity_feed: deque = deque(maxlen=100)   # recent events
-previous_markets: dict = {}         # last snapshot keyed by stem
-connected_clients: set = set()      # active WebSocket connections
+balance_history: deque = deque(maxlen=2000)   # [{ts, balance}, ...] — capped
+activity_feed: deque = deque(maxlen=200)      # recent events (buys, exits, resolves)
+previous_markets: dict = {}                   # last snapshot keyed by stem
+connected_clients: set = set()                # active WebSocket connections
+_market_cache: dict = {}                      # {path_str: (mtime, data)} for read_all_markets
 
 # =============================================================================
 # DATA READING HELPERS
@@ -104,14 +112,35 @@ def read_state() -> dict:
 
 
 def read_all_markets() -> dict:
-    """Read all data/markets/*.json; keyed by file stem (e.g. 'nyc_2026-03-24')."""
+    """Read all data/markets/*.json; keyed by file stem (e.g. 'nyc_2026-03-24').
+    Reads are cached by mtime so unchanged files are never re-parsed.
+    With 80+ market files and a file-watcher firing on every bot save,
+    the naive re-read path was pure wasted I/O."""
     markets = {}
     if not MARKETS_DIR.exists():
         return markets
+
+    alive_keys = set()
     for path in sorted(MARKETS_DIR.glob("*.json")):
+        try:
+            mtime = path.stat().st_mtime
+        except FileNotFoundError:
+            continue
+        key = str(path)
+        alive_keys.add(key)
+        cached = _market_cache.get(key)
+        if cached and cached[0] == mtime:
+            markets[path.stem] = cached[1]
+            continue
         data = read_json(path)
         if data is not None:
+            _market_cache[key] = (mtime, data)
             markets[path.stem] = data
+
+    # Prune cache entries for files that have been deleted.
+    for stale in [k for k in _market_cache if k not in alive_keys]:
+        _market_cache.pop(stale, None)
+
     return markets
 
 
@@ -121,23 +150,63 @@ def read_calibration() -> Optional[dict]:
 
 
 def check_bot_status() -> dict:
-    """Return running/stopped status by scanning processes for bot_v2.py."""
+    """Decide whether the bot is alive from the heartbeat file it drops in
+    data/. Works across processes, across containers, and across hosts as
+    long as they share the data volume. psutil is only used as a best-effort
+    fallback when the bot happens to live in the same PID namespace (legacy
+    single-process setup)."""
+    heartbeat = read_json(HEARTBEAT_FILE)
+    if heartbeat:
+        try:
+            mtime       = HEARTBEAT_FILE.stat().st_mtime
+            age_seconds = max(0, datetime.now().timestamp() - mtime)
+            started_at  = heartbeat.get("started_at")
+            uptime_s    = 0
+            if started_at:
+                try:
+                    started_dt = datetime.fromisoformat(started_at)
+                    uptime_s   = int((datetime.now(timezone.utc) - started_dt).total_seconds())
+                except Exception:
+                    pass
+            return {
+                "running":        age_seconds < HEARTBEAT_STALE_SECONDS,
+                "pid":            heartbeat.get("pid"),
+                "cpu_percent":    0.0,
+                "memory_mb":      0.0,
+                "uptime_seconds": uptime_s,
+                "heartbeat_age":  round(age_seconds, 1),
+                "last_scan":      heartbeat.get("last_scan"),
+                "last_monitor":   heartbeat.get("last_monitor"),
+                "source":         "heartbeat",
+            }
+        except Exception:
+            pass
+
+    # Legacy fallback — only finds the bot if it shares our PID namespace.
     for proc in psutil.process_iter(["pid", "name", "cmdline", "cpu_percent", "memory_info", "create_time"]):
         try:
             cmdline = proc.info.get("cmdline") or []
             if any("bot_v2.py" in arg for arg in cmdline):
-                mem_mb = round(proc.info["memory_info"].rss / 1024 / 1024, 1) if proc.info.get("memory_info") else 0
+                mem_mb   = round(proc.info["memory_info"].rss / 1024 / 1024, 1) if proc.info.get("memory_info") else 0
                 uptime_s = int(datetime.now().timestamp() - proc.info.get("create_time", 0))
                 return {
-                    "running": True,
-                    "pid": proc.info["pid"],
-                    "cpu_percent": proc.info.get("cpu_percent", 0.0),
-                    "memory_mb": mem_mb,
+                    "running":        True,
+                    "pid":            proc.info["pid"],
+                    "cpu_percent":    proc.info.get("cpu_percent", 0.0),
+                    "memory_mb":      mem_mb,
                     "uptime_seconds": uptime_s,
+                    "source":         "psutil",
                 }
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
-    return {"running": False, "pid": None, "cpu_percent": 0.0, "memory_mb": 0.0, "uptime_seconds": 0}
+    return {
+        "running":        False,
+        "pid":            None,
+        "cpu_percent":    0.0,
+        "memory_mb":      0.0,
+        "uptime_seconds": 0,
+        "source":         "none",
+    }
 
 # =============================================================================
 # ACTIVITY RECONSTRUCTION
@@ -145,7 +214,11 @@ def check_bot_status() -> dict:
 
 
 def detect_changes(old_markets: dict, new_markets: dict) -> list[dict]:
-    """Compare market snapshots and generate activity feed events."""
+    """Compare market snapshots and generate activity feed events.
+    Only emits high-signal events (new market, buy, exit, resolve). Per-scan
+    forecast snapshots used to be logged here too but they drowned every
+    other event in the capped deque — 80 FORECAST lines per scan left no
+    room for BUY/SELL history."""
     events = []
     now = datetime.now(timezone.utc).isoformat()
 
@@ -176,16 +249,6 @@ def detect_changes(old_markets: dict, new_markets: dict) -> list[dict]:
             events.append({
                 "ts": now, "type": "stop" if pnl < 0 else "resolved",
                 "msg": f"EXIT {city} {reason} @ {new_pos.get('exit_price', 0):.3f} ({sign}${pnl:.2f})"
-            })
-
-        # New forecast snapshot
-        old_snaps = len(old_data.get("forecast_snapshots", []))
-        new_snaps = len(new_data.get("forecast_snapshots", []))
-        if new_snaps > old_snaps:
-            latest = new_data["forecast_snapshots"][-1]
-            events.append({
-                "ts": now, "type": "monitor",
-                "msg": f"FORECAST {city} {latest.get('best_source', '').upper()} {latest.get('best')}°"
             })
 
     return events
@@ -328,7 +391,7 @@ def build_dashboard_data() -> dict:
         "forecasts": forecasts,
         "calibration": calibration,
         "bot_status": bot_status,
-        "balance_history": balance_history,
+        "balance_history": list(balance_history),
         "activity": list(activity_feed),
         "locations": LOCATIONS,
     }
@@ -337,7 +400,22 @@ def build_dashboard_data() -> dict:
 # FASTAPI APP
 # =============================================================================
 
-app = FastAPI(title="WeatherBet Operations Center", version="1.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Launch the file-watcher on startup and cancel it cleanly on shutdown.
+    Replaces the deprecated @app.on_event('startup') hook."""
+    watcher_task = asyncio.create_task(watch_data_directory())
+    try:
+        yield
+    finally:
+        watcher_task.cancel()
+        try:
+            await watcher_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+app = FastAPI(title="WeatherBet Operations Center", version="1.0.0", lifespan=lifespan)
 
 # Mount static files if the directory exists
 _static_dir = BASE_DIR / "static"
@@ -377,7 +455,6 @@ async def api_market_detail(city: str, date: str):
     path = MARKETS_DIR / f"{stem}.json"
     data = read_json(path)
     if data is None:
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail=f"Market {stem} not found")
     return data
 
@@ -448,7 +525,7 @@ async def watch_data_directory():
     try:
         from watchfiles import awatch
     except ImportError:
-        # watchfiles not available — fall back to polling every 10 s
+        # watchfiles not available — fall back to polling every 10 s.
         while True:
             await asyncio.sleep(10)
             new_markets = read_all_markets()
@@ -459,11 +536,17 @@ async def watch_data_directory():
             if connected_clients:
                 data = build_dashboard_data()
                 await broadcast({"type": "full_update", "data": data})
-            return
+        return  # pragma: no cover — unreachable, here to pacify linters
 
     previous_markets = read_all_markets()
 
     async for changes in awatch(str(DATA_DIR)):
+        # The bot uses atomic writes (temp file + rename), so every real save
+        # generates events for both `foo.json.tmp` and `foo.json`. Ignore the
+        # tmp ones — they double the work and nothing downstream wants them.
+        real = [c for c in changes if not str(c[1]).endswith(".tmp")]
+        if not real:
+            continue
         new_markets = read_all_markets()
         events = detect_changes(previous_markets, new_markets)
         for ev in events:
@@ -472,12 +555,6 @@ async def watch_data_directory():
         if connected_clients:
             data = build_dashboard_data()
             await broadcast({"type": "full_update", "data": data})
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Launch the file-watcher as a background task on app startup."""
-    asyncio.create_task(watch_data_directory())
 
 # =============================================================================
 # ENTRY POINT

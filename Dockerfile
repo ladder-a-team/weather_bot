@@ -15,11 +15,16 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install -r requirements.txt tzdata
 
-# Source, config, and the empty data skeleton.
-COPY bot_v2.py bot_v1.py dashboard.py config.json ./
+# Source + static assets — these change relatively rarely.
+COPY bot_v2.py bot_v1.py dashboard.py ./
 COPY static ./static
 COPY templates ./templates
 COPY data ./data
+
+# Config last, so editing config.json doesn't bust the cache for any of
+# the layers above. Compose bind-mounts this at runtime anyway; the baked
+# copy is only used when the image is run without compose.
+COPY config.json ./
 
 # Dashboard listens on 8050 by default.
 EXPOSE 8050

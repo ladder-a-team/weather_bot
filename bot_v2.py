@@ -55,6 +55,7 @@ STATE_FILE       = DATA_DIR / "state.json"
 MARKETS_DIR      = DATA_DIR / "markets"
 MARKETS_DIR.mkdir(exist_ok=True)
 CALIBRATION_FILE = DATA_DIR / "calibration.json"
+HEARTBEAT_FILE   = DATA_DIR / "heartbeat.json"
 
 LOCATIONS = {
     "nyc":          {"lat": 40.7772,  "lon":  -73.8726, "name": "New York City", "station": "KLGA", "unit": "F", "region": "us"},
@@ -427,6 +428,33 @@ def load_state():
 
 def save_state(state):
     _atomic_write_json(STATE_FILE, state)
+
+_BOT_STARTED_AT = datetime.now(timezone.utc)
+
+def write_heartbeat(last_scan=None, last_monitor=None):
+    """Drop a heartbeat JSON so the dashboard can tell whether the bot is
+    alive even when running in a separate container (where psutil can't see
+    the bot's PID). The dashboard reads the file's mtime plus its fields."""
+    now = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "ts":           now,
+        "pid":          os.getpid(),
+        "started_at":   _BOT_STARTED_AT.isoformat(),
+        "last_scan":    last_scan,
+        "last_monitor": last_monitor,
+    }
+    # Merge with any previous fields so a scan-tick heartbeat doesn't wipe
+    # the last monitor timestamp and vice versa.
+    if HEARTBEAT_FILE.exists():
+        try:
+            prev = json.loads(HEARTBEAT_FILE.read_text(encoding="utf-8"))
+            if last_scan is None:
+                payload["last_scan"] = prev.get("last_scan")
+            if last_monitor is None:
+                payload["last_monitor"] = prev.get("last_monitor")
+        except Exception:
+            pass
+    _atomic_write_json(HEARTBEAT_FILE, payload)
 
 def calculate_balance_from_trades():
     """Ground truth balance calculated from market files instead of incremental tracking."""
@@ -1024,6 +1052,7 @@ def run_loop():
     print(f"  Data:       {DATA_DIR.resolve()}")
     print(f"  Ctrl+C to stop\n")
 
+    write_heartbeat()  # initial heartbeat on startup
     last_full_scan = 0
 
     while True:
@@ -1039,6 +1068,7 @@ def run_loop():
                 print(f"  balance: ${state['balance']:,.2f} | "
                       f"new: {new_pos} | closed: {closed} | resolved: {resolved}")
                 last_full_scan = time.time()
+                write_heartbeat(last_scan=datetime.now(timezone.utc).isoformat())
             except KeyboardInterrupt:
                 print(f"\n  Stopping — saving state...")
                 save_state(load_state())
@@ -1060,6 +1090,7 @@ def run_loop():
                 if stopped:
                     state = load_state()
                     print(f"  balance: ${state['balance']:,.2f}")
+                write_heartbeat(last_monitor=datetime.now(timezone.utc).isoformat())
             except Exception as e:
                 print(f"  Monitor error: {e}")
 

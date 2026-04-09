@@ -15,6 +15,74 @@ this repository.
 
 ---
 
+## Environments
+
+There are **two** running instances of this bot, both identical in code and
+config — only the host filesystem (and therefore `./data/`) differs.
+
+| Env | Where | Data volume | Purpose |
+|---|---|---|---|
+| **Staging** | User's Mac, `docker compose` in the repo working tree. Dashboard at `http://localhost:8050`. | `./data/` on the Mac | The environment an agent is interacting with by default. Safe to reset, rescan, break, rebuild. |
+| **Production** | A separate VPS (hostname intentionally NOT stored in this repo). | `./data/` on the VPS (own markets / state / calibration, never touched from staging) | Live paper-trading against real Polymarket markets. Do not touch without an explicit instruction from the user. |
+
+### Important consequences
+
+- **Same code path runs in both envs.** There is no `if ENV == "prod"`
+  branch, no feature flag, no staging-only config. Both containers ship
+  from the same git commit. If a change is merged to `main`, it is ready
+  for prod on the next manual deploy.
+- **Data is never shared.** The two `./data/` directories are separate
+  filesystems. Resetting staging via the dashboard RESET button has zero
+  effect on production.
+- **Do not assume the VPS host.** The hostname, IP, SSH user, and any
+  credentials are intentionally kept out of the repo. If an agent needs
+  to refer to the VPS in a discussion with the user, it should say
+  "the production VPS" and let the user fill in specifics if they want.
+  Never `curl` or `ssh` anywhere that looks like it might be production
+  without an explicit user instruction naming that host in the current
+  conversation.
+
+### Promoting staging → production
+
+Deploys are entirely manual. There is no CI, no auto-pull, no webhook.
+When the user says "deploy to prod" or equivalent, the agent should
+walk through this checklist **with the user**, not execute it
+unilaterally:
+
+1. Confirm the commit currently on `ladder/main` is the one the user
+   wants to ship. `git log --oneline -10` is enough for context.
+2. Remind the user that the prod data volume is separate — whatever
+   markets/state are on the VPS stay as they are unless explicitly
+   reset there.
+3. The user SSHes into the VPS and runs, from the repo directory:
+   ```bash
+   git pull
+   docker compose build
+   docker compose up -d
+   ```
+   (A plain `docker compose up -d --build` works too.)
+4. After the restart, check the prod dashboard (user knows the URL).
+   Verify `data.version` matches the commit just deployed and that
+   `bot_status.running` is `true` with a recent `heartbeat_age`.
+5. If anything goes wrong, the user can roll back with
+   `git checkout <previous-sha>` + `docker compose up -d --build` on
+   the VPS. Do **not** suggest rolling back via `git push --force` on
+   the repo — that would also rewrite staging's history.
+
+### Things an agent must NOT do to production
+
+- Never trigger `/api/admin/reset` against production. That endpoint
+  is unauthenticated; if the agent somehow has network access to a
+  prod URL, it is still off-limits without an explicit, in-conversation
+  instruction naming the host.
+- Never run `docker compose down -v`, `git clean`, `rm -rf data/`, or
+  any other destructive command on the VPS. Same rule: only with an
+  explicit, named instruction.
+- Never edit config.json on the VPS without the user reviewing the
+  diff first. The Visual Crossing key lives there.
+
+---
+
 ## Upstream check — what to do, what NOT to do
 
 When a user asks an agent to "look for updates", "check upstream", "sync from
@@ -154,8 +222,15 @@ Follow the existing style (see `git log --oneline`):
 
 ## What to remember across sessions
 
-- The bot is running in Docker on the user's Mac. The dashboard is on
-  `http://localhost:8050`. Don't assume a fresh setup.
-- There is only one deploy target (this fork); there is no staging branch.
+- **You are in staging by default.** The bot + dashboard the agent
+  interacts with are the Docker containers on the user's Mac,
+  dashboard at `http://localhost:8050`. Safe to break.
+- **Production exists on a separate VPS.** Same code, same config,
+  separate `data/`. Never deploy to it, reset it, or run commands
+  against it without an explicit, named instruction from the user in
+  the current conversation. See the Environments section above.
+- **One branch: `main`.** There is no `staging` branch — environment
+  separation is by host, not by git ref. A merge to `main` is
+  immediately available for manual deploy to prod.
 - The user prefers concise summaries over verbose step-by-step narration.
   Lead with what changed and what to look at; put the "why" second.

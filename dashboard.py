@@ -488,6 +488,153 @@ async def api_dashboard():
     return build_dashboard_data()
 
 
+def build_backtest_data() -> dict:
+    """Compute backtest stats from every market file.
+
+    Returns per-source and per-close-reason breakdowns plus a per-trade
+    list the frontend uses for scatter / calibration plots. Works even
+    when no markets have fully resolved yet — in that case the calibration
+    block is empty but the by-reason / by-source tables still populate
+    from stop_loss / forecast_changed exits."""
+    markets = read_all_markets()
+
+    closed = []           # every position that hit any close_reason
+    resolved = []         # subset where the market actually settled (actual_temp set, resolved_outcome ∈ {win, loss})
+
+    for m in markets.values():
+        pos = m.get("position")
+        if not pos or pos.get("status") != "closed":
+            continue
+        cost         = float(pos.get("cost") or 0) or 1.0
+        pnl          = float(pos.get("pnl") or 0)
+        realized_ret = pnl / cost
+        rec = {
+            "city":          m.get("city"),
+            "city_name":     m.get("city_name") or m.get("city"),
+            "date":          m.get("date"),
+            "unit":          m.get("unit", "F"),
+            "p":             pos.get("p"),
+            "ev":            pos.get("ev"),
+            "kelly":         pos.get("kelly"),
+            "sigma":         pos.get("sigma"),
+            "forecast_src":  pos.get("forecast_src") or pos.get("prob_source"),
+            "entry_price":   pos.get("entry_price"),
+            "exit_price":    pos.get("exit_price"),
+            "cost":          cost,
+            "pnl":           round(pnl, 2),
+            "realized_ret":  round(realized_ret, 4),
+            "close_reason":  pos.get("close_reason"),
+            "closed_at":     pos.get("closed_at"),
+            "resolved":      m.get("status") == "resolved",
+            "won":           (m.get("resolved_outcome") == "win") if m.get("status") == "resolved" else None,
+            "actual_temp":   m.get("actual_temp"),
+            "bucket_low":    pos.get("bucket_low"),
+            "bucket_high":   pos.get("bucket_high"),
+        }
+        closed.append(rec)
+        if rec["resolved"] and rec["won"] is not None:
+            resolved.append(rec)
+
+    closed.sort(key=lambda r: r.get("closed_at") or "", reverse=True)
+
+    # ----- Breakdown: close_reason -----
+    by_reason = {}
+    for r in closed:
+        key = r["close_reason"] or "unknown"
+        slot = by_reason.setdefault(key, {"n": 0, "total_pnl": 0.0, "wins": 0})
+        slot["n"] += 1
+        slot["total_pnl"] += r["pnl"]
+        if (r["pnl"] or 0) > 0:
+            slot["wins"] += 1
+    for slot in by_reason.values():
+        slot["avg_pnl"]  = round(slot["total_pnl"] / slot["n"], 2) if slot["n"] else 0.0
+        slot["total_pnl"] = round(slot["total_pnl"], 2)
+        slot["hit_rate"] = round(slot["wins"] / slot["n"], 3) if slot["n"] else None
+
+    # ----- Breakdown: forecast source -----
+    by_source = {}
+    for r in closed:
+        key = r["forecast_src"] or "unknown"
+        slot = by_source.setdefault(key, {
+            "n": 0, "total_pnl": 0.0, "wins": 0,
+            "sum_predicted_p": 0.0, "sum_ev": 0.0, "sum_realized_ret": 0.0,
+            "n_with_p": 0,
+        })
+        slot["n"] += 1
+        slot["total_pnl"] += r["pnl"]
+        slot["sum_realized_ret"] += r["realized_ret"] or 0
+        slot["sum_ev"] += float(r["ev"] or 0)
+        if r["p"] is not None:
+            slot["sum_predicted_p"] += float(r["p"])
+            slot["n_with_p"] += 1
+        if (r["pnl"] or 0) > 0:
+            slot["wins"] += 1
+    for slot in by_source.values():
+        n = slot["n"]
+        slot["total_pnl"]        = round(slot["total_pnl"], 2)
+        slot["avg_pnl"]          = round(slot["total_pnl"] / n, 2) if n else 0.0
+        slot["avg_ev"]           = round(slot["sum_ev"] / n, 3) if n else 0.0
+        slot["avg_realized_ret"] = round(slot["sum_realized_ret"] / n, 4) if n else 0.0
+        slot["avg_predicted_p"]  = round(slot["sum_predicted_p"] / slot["n_with_p"], 3) if slot["n_with_p"] else None
+        slot["hit_rate"]         = round(slot["wins"] / n, 3) if n else None
+        # trim internals
+        for k in ("sum_predicted_p", "sum_ev", "sum_realized_ret", "n_with_p"):
+            slot.pop(k, None)
+
+    # ----- Calibration curve (only fully resolved markets) -----
+    # Bin predicted p into deciles and compare against actual win rate.
+    bins = [(i / 10, (i + 1) / 10) for i in range(10)]
+    calibration = []
+    for lo, hi in bins:
+        group = [r for r in resolved if r["p"] is not None and lo <= r["p"] < hi]
+        if not group:
+            continue
+        avg_p  = sum(r["p"] for r in group) / len(group)
+        wins   = sum(1 for r in group if r["won"])
+        calibration.append({
+            "bin_lo":   round(lo, 2),
+            "bin_hi":   round(hi, 2),
+            "n":        len(group),
+            "avg_p":    round(avg_p, 3),
+            "observed": round(wins / len(group), 3),
+        })
+
+    # ----- Summary headline -----
+    wins   = sum(1 for r in closed if (r["pnl"] or 0) > 0)
+    losses = sum(1 for r in closed if (r["pnl"] or 0) < 0)
+    total_pnl = round(sum(r["pnl"] for r in closed), 2)
+    avg_realized_ret = (
+        round(sum(r["realized_ret"] or 0 for r in closed) / len(closed), 4)
+        if closed else None
+    )
+    avg_ev = (
+        round(sum(float(r["ev"] or 0) for r in closed) / len(closed), 3)
+        if closed else None
+    )
+
+    return {
+        "version":        __version__,
+        "summary": {
+            "total_closed":     len(closed),
+            "total_resolved":   len(resolved),
+            "wins":             wins,
+            "losses":           losses,
+            "total_pnl":        total_pnl,
+            "avg_realized_ret": avg_realized_ret,
+            "avg_ev_predicted": avg_ev,
+        },
+        "by_reason":      by_reason,
+        "by_source":      by_source,
+        "calibration":    calibration,
+        "trades":         closed,     # already sorted newest-first
+    }
+
+
+@app.get("/api/backtest")
+async def api_backtest():
+    return build_backtest_data()
+
+
 # ---------------------------------------------------------------------------
 # Admin endpoints
 #

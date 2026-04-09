@@ -470,8 +470,9 @@
     function updateBotStatus(status) {
         const el = document.getElementById("bot-status");
         if (status.running) {
-            const version = status.version ? " v" + status.version : "";
-            el.textContent = "Bot: PID " + status.pid + version;
+            // Version lives in the dedicated tag on the left (updateVersion).
+            // Don't duplicate it here.
+            el.textContent = "Bot: PID " + status.pid;
         } else {
             el.innerHTML = '<span class="badge badge-stopped">STOPPED</span>';
         }
@@ -512,6 +513,11 @@
         updateCalibration(data.calibration);
         updateActivity(data.activity || []);
         updateBotStatus(data.bot_status || {});
+        // Quietly refresh the backtest tab if it's visible. Stats come
+        // from a separate endpoint so we don't do it unconditionally.
+        if (activeTab === "backtest") {
+            loadBacktest();
+        }
     }
 
     // =========================================================================
@@ -570,6 +576,155 @@
                 await postAdmin("/api/admin/reset", resetBtn, "CLEARED");
             });
         }
+    }
+
+    // =========================================================================
+    // Center-top panel tabs (Balance History / Backtest)
+    // =========================================================================
+    let activeTab = "chart";
+    let backtestLoaded = false;
+
+    function showTab(name) {
+        activeTab = name;
+        document.querySelectorAll(".panel-tab").forEach(el => {
+            el.classList.toggle("active", el.dataset.tab === name);
+        });
+        document.querySelectorAll("[data-tab-view]").forEach(el => {
+            el.hidden = el.dataset.tabView !== name;
+        });
+        if (name === "chart") {
+            // Chart.js needs a resize kick after becoming visible.
+            setTimeout(function () { balanceChart.resize(); }, 50);
+        } else if (name === "backtest") {
+            loadBacktest();
+        }
+    }
+
+    function initPanelTabs() {
+        document.querySelectorAll(".panel-tab").forEach(el => {
+            el.addEventListener("click", function () {
+                showTab(el.dataset.tab);
+            });
+        });
+    }
+
+    async function loadBacktest() {
+        const container = document.getElementById("backtest-summary");
+        if (!container) return;
+        if (!backtestLoaded) container.innerHTML = '<div class="backtest-empty">Loading…</div>';
+        try {
+            const resp = await fetch("/api/backtest");
+            if (!resp.ok) throw new Error("HTTP " + resp.status);
+            const data = await resp.json();
+            renderBacktest(data);
+            backtestLoaded = true;
+        } catch (err) {
+            container.innerHTML = '<div class="backtest-empty">Failed to load backtest: ' + err.message + '</div>';
+        }
+    }
+
+    function fmtPnl(v) {
+        if (v == null) return "—";
+        const sign = v >= 0 ? "+" : "";
+        return sign + "$" + Number(v).toFixed(2);
+    }
+
+    function fmtPct(v) {
+        if (v == null) return "—";
+        return (Number(v) * 100).toFixed(1) + "%";
+    }
+
+    function renderBacktest(data) {
+        const container = document.getElementById("backtest-summary");
+        const s = data.summary || {};
+
+        let html = "";
+
+        // KPI grid
+        html += '<div class="backtest-kpis">';
+        html += '<div class="backtest-kpi"><div class="label">Closed</div><div class="value">' + (s.total_closed ?? 0) + '</div></div>';
+        html += '<div class="backtest-kpi"><div class="label">Resolved</div><div class="value">' + (s.total_resolved ?? 0) + '</div></div>';
+        const pnlClass = (s.total_pnl ?? 0) >= 0 ? "text-green" : "text-red";
+        html += '<div class="backtest-kpi"><div class="label">Realized PnL</div><div class="value ' + pnlClass + '">' + fmtPnl(s.total_pnl) + '</div></div>';
+        html += '<div class="backtest-kpi"><div class="label">Avg Realized Return</div><div class="value">' + fmtPct(s.avg_realized_ret) + '</div></div>';
+        html += '<div class="backtest-kpi"><div class="label">Wins</div><div class="value text-green">' + (s.wins ?? 0) + '</div></div>';
+        html += '<div class="backtest-kpi"><div class="label">Losses</div><div class="value text-red">' + (s.losses ?? 0) + '</div></div>';
+        html += '<div class="backtest-kpi"><div class="label">Avg EV Predicted</div><div class="value">' + (s.avg_ev_predicted != null ? "+" + Number(s.avg_ev_predicted).toFixed(2) : "—") + '</div></div>';
+        const hit = s.total_closed ? (s.wins || 0) / s.total_closed : null;
+        html += '<div class="backtest-kpi"><div class="label">Hit Rate</div><div class="value">' + (hit != null ? fmtPct(hit) : "—") + '</div></div>';
+        html += '</div>';
+
+        // By forecast source
+        html += '<div class="backtest-section-title">By Forecast Source</div>';
+        const bySrc = data.by_source || {};
+        const srcKeys = Object.keys(bySrc);
+        if (srcKeys.length === 0) {
+            html += '<div class="backtest-empty">No closed trades yet.</div>';
+        } else {
+            html += '<table class="backtest-table"><thead><tr>';
+            html += '<th>Source</th><th class="num">N</th><th class="num">Hit</th><th class="num">Avg EV</th><th class="num">Avg Return</th><th class="num">Total PnL</th>';
+            html += '</tr></thead><tbody>';
+            srcKeys.sort((a, b) => (bySrc[b].total_pnl || 0) - (bySrc[a].total_pnl || 0));
+            for (const k of srcKeys) {
+                const row = bySrc[k];
+                const rowPnlClass = (row.total_pnl || 0) >= 0 ? "text-green" : "text-red";
+                html += '<tr>';
+                html += '<td>' + k.toUpperCase() + '</td>';
+                html += '<td class="num">' + row.n + '</td>';
+                html += '<td class="num">' + (row.hit_rate != null ? fmtPct(row.hit_rate) : "—") + '</td>';
+                html += '<td class="num">' + (row.avg_ev != null ? "+" + row.avg_ev.toFixed(2) : "—") + '</td>';
+                html += '<td class="num">' + (row.avg_realized_ret != null ? fmtPct(row.avg_realized_ret) : "—") + '</td>';
+                html += '<td class="num ' + rowPnlClass + '">' + fmtPnl(row.total_pnl) + '</td>';
+                html += '</tr>';
+            }
+            html += '</tbody></table>';
+        }
+
+        // By close reason
+        html += '<div class="backtest-section-title">By Close Reason</div>';
+        const byR = data.by_reason || {};
+        const rKeys = Object.keys(byR);
+        if (rKeys.length === 0) {
+            html += '<div class="backtest-empty">No closed trades yet.</div>';
+        } else {
+            html += '<table class="backtest-table"><thead><tr>';
+            html += '<th>Reason</th><th class="num">N</th><th class="num">Hit</th><th class="num">Avg PnL</th><th class="num">Total PnL</th>';
+            html += '</tr></thead><tbody>';
+            rKeys.sort((a, b) => (byR[b].total_pnl || 0) - (byR[a].total_pnl || 0));
+            for (const k of rKeys) {
+                const row = byR[k];
+                const rowPnlClass = (row.total_pnl || 0) >= 0 ? "text-green" : "text-red";
+                html += '<tr>';
+                html += '<td>' + k.replace(/_/g, " ") + '</td>';
+                html += '<td class="num">' + row.n + '</td>';
+                html += '<td class="num">' + (row.hit_rate != null ? fmtPct(row.hit_rate) : "—") + '</td>';
+                html += '<td class="num">' + fmtPnl(row.avg_pnl) + '</td>';
+                html += '<td class="num ' + rowPnlClass + '">' + fmtPnl(row.total_pnl) + '</td>';
+                html += '</tr>';
+            }
+            html += '</tbody></table>';
+        }
+
+        // Calibration (only once we have resolved markets)
+        if (data.calibration && data.calibration.length > 0) {
+            html += '<div class="backtest-section-title">Calibration (resolved only)</div>';
+            html += '<table class="backtest-table"><thead><tr>';
+            html += '<th>p bin</th><th class="num">N</th><th class="num">Predicted</th><th class="num">Observed</th>';
+            html += '</tr></thead><tbody>';
+            for (const row of data.calibration) {
+                html += '<tr>';
+                html += '<td>' + row.bin_lo.toFixed(1) + '–' + row.bin_hi.toFixed(1) + '</td>';
+                html += '<td class="num">' + row.n + '</td>';
+                html += '<td class="num">' + fmtPct(row.avg_p) + '</td>';
+                html += '<td class="num">' + fmtPct(row.observed) + '</td>';
+                html += '</tr>';
+            }
+            html += '</tbody></table>';
+        } else if ((s.total_resolved || 0) === 0) {
+            html += '<div class="backtest-empty">Calibration curve unlocks once markets fully resolve (not stop_loss / forecast_changed).</div>';
+        }
+
+        container.innerHTML = html;
     }
 
     // =========================================================================
@@ -672,6 +827,7 @@
     initBalanceCollapse();
     initAdminButtons();
     initTableSorting();
+    initPanelTabs();
     updateDashboard(DATA);
     connectWebSocket();
 

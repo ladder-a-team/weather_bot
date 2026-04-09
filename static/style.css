@@ -154,6 +154,126 @@ body {
     color: var(--text-primary);
 }
 
+/* ---- Panel tab switcher (Balance / Backtest) ---- */
+.panel-tabs {
+    display: flex;
+    gap: 4px;
+}
+
+.panel-tab {
+    background: transparent;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    color: var(--text-secondary);
+    font-family: var(--font-ui);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 2px 6px 4px;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+}
+
+.panel-tab:hover {
+    color: var(--text-primary);
+}
+
+.panel-tab.active {
+    color: var(--accent-blue);
+    border-bottom-color: var(--accent-blue);
+}
+
+.tab-view[hidden] { display: none !important; }
+
+/* ---- Backtest view ---- */
+.backtest-container {
+    flex: 1;
+    min-height: 0;
+    background: var(--bg-panel);
+    border-radius: 4px;
+    padding: 10px;
+    overflow-y: auto;
+}
+
+.backtest-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    height: 100%;
+}
+
+.backtest-kpis {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+}
+
+.backtest-kpi {
+    background: var(--bg-main);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 6px 8px;
+}
+
+.backtest-kpi .label {
+    font-size: 8px;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    letter-spacing: 0.5px;
+}
+
+.backtest-kpi .value {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-top: 2px;
+}
+
+.backtest-section-title {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+    margin-bottom: 2px;
+}
+
+.backtest-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 10px;
+    font-family: var(--font-mono);
+}
+
+.backtest-table th {
+    text-align: left;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    font-size: 8px;
+    font-weight: 600;
+    border-bottom: 1px solid var(--border);
+    padding: 3px 6px;
+}
+
+.backtest-table td {
+    color: var(--text-data);
+    padding: 3px 6px;
+    border-bottom: 1px solid rgba(48, 54, 61, 0.3);
+}
+
+.backtest-table td.num, .backtest-table th.num {
+    text-align: right;
+}
+
+.backtest-empty {
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-style: italic;
+    padding: 12px 0;
+}
+
 .status-bar .left, .status-bar .right {
     display: flex;
     align-items: center;

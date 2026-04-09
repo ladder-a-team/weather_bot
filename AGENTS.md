@@ -23,7 +23,7 @@ config — only the host filesystem (and therefore `./data/`) differs.
 | Env | Where | Data volume | Purpose |
 |---|---|---|---|
 | **Staging** | User's Mac, `docker compose` in the repo working tree. Dashboard at `http://localhost:8050`. | `./data/` on the Mac | The environment an agent is interacting with by default. Safe to reset, rescan, break, rebuild. |
-| **Production** | A separate VPS (hostname intentionally NOT stored in this repo). | `./data/` on the VPS (own markets / state / calibration, never touched from staging) | Live paper-trading against real Polymarket markets. Do not touch without an explicit instruction from the user. |
+| **Production** | A VPS reachable over the maintainer's VPN at <http://weather.lad.10-8-0-1.sslip.io:8088/>. The `10-8-0-1` in the hostname is sslip.io encoding for `10.8.0.1`, so the URL only resolves from inside the VPN. | `./data/` on the VPS (own markets / state / calibration, never touched from staging) | Live paper-trading against real Polymarket markets. **Read-only by default from an agent's perspective.** The public HTTP API (`/api/dashboard`, `/api/markets`, `/api/backtest`) can be fetched for inspection. Admin endpoints (`/api/admin/rescan`, `/api/admin/reset`), shell access, and anything write-side must never be hit without an explicit user instruction naming the host. |
 
 ### Important consequences
 
@@ -34,13 +34,13 @@ config — only the host filesystem (and therefore `./data/`) differs.
 - **Data is never shared.** The two `./data/` directories are separate
   filesystems. Resetting staging via the dashboard RESET button has zero
   effect on production.
-- **Do not assume the VPS host.** The hostname, IP, SSH user, and any
-  credentials are intentionally kept out of the repo. If an agent needs
-  to refer to the VPS in a discussion with the user, it should say
-  "the production VPS" and let the user fill in specifics if they want.
-  Never `curl` or `ssh` anywhere that looks like it might be production
-  without an explicit user instruction naming that host in the current
-  conversation.
+- **The VPS HTTP URL is recorded above, but treat it as read-only.**
+  Fetching `/api/dashboard` or `/api/markets` or `/api/backtest` for
+  diagnostics is fine. POSTing to `/api/admin/*`, SSH-ing into the
+  host, or running `docker compose` against it is **not**, unless the
+  user has named the host and the action in the current conversation.
+  SSH credentials, root password, IP outside the VPN, and anything
+  else needed for destructive ops are intentionally NOT in this repo.
 
 ### Promoting staging → production
 

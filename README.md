@@ -8,6 +8,14 @@ No SDK. No black box. Pure Python.
 > This fork (`ladder-a-team/weather_bot`) is maintained independently. See
 > [`AGENTS.md`](AGENTS.md) for how AI agents working on this repo should
 > periodically check upstream for new features.
+>
+> **Live deployments**
+> - **Production:** <http://weather.lad.10-8-0-1.sslip.io:8088/>
+>   (reachable over VPN — the hostname resolves to `10.8.0.1`)
+> - **Staging:** `http://localhost:8050/` on the maintainer's Mac
+>
+> Both instances run the same git commit. Only the host `data/` volume
+> differs — see `AGENTS.md` for the promotion checklist.
 
 ---
 

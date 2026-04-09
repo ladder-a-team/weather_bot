@@ -91,16 +91,26 @@
         </div>
     </div>
 
-    <!-- CENTER TOP: Balance Chart (collapsible) -->
+    <!-- CENTER TOP: Balance Chart / Backtest (tabbed + collapsible) -->
     <div class="panel panel-balance" id="panel-balance">
         <div class="panel-header">
-            <span>Balance History</span>
+            <div class="panel-tabs">
+                <button class="panel-tab active" data-tab="chart">Balance History</button>
+                <button class="panel-tab" data-tab="backtest">Backtest</button>
+            </div>
             <button class="collapse-toggle" id="balance-toggle"
                     aria-label="Toggle balance history"
                     title="Collapse / expand">▼</button>
         </div>
-        <div class="chart-container" id="balance-chart-container">
+
+        <div class="chart-container tab-view" data-tab-view="chart" id="balance-chart-container">
             <canvas id="balance-chart"></canvas>
+        </div>
+
+        <div class="backtest-container tab-view" data-tab-view="backtest" id="backtest-container" hidden>
+            <div class="backtest-summary" id="backtest-summary">
+                <div class="empty-state">Click tab to load backtest…</div>
+            </div>
         </div>
     </div>
 

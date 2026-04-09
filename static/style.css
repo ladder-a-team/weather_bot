@@ -40,7 +40,23 @@ body {
 .status-bar .brand {
     font-weight: 600;
     font-size: 14px;
-    margin-right: 12px;
+    margin-right: 8px;
+}
+
+.status-bar .version {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-secondary);
+    background: var(--bg-main);
+    border: 1px solid var(--border);
+    padding: 1px 6px;
+    border-radius: 3px;
+    letter-spacing: 0.3px;
+}
+
+.status-bar .version.mismatch {
+    color: var(--accent-yellow);
+    border-color: var(--accent-yellow);
 }
 
 .status-bar .left, .status-bar .right {
@@ -165,6 +181,43 @@ body {
 
 .panel-header .count {
     font-family: var(--font-mono);
+}
+
+/* ---- Collapse toggle button ---- */
+.collapse-toggle {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 9px;
+    line-height: 1;
+    padding: 3px 8px;
+    border-radius: 3px;
+    transition: transform 0.2s ease, color 0.15s, border-color 0.15s;
+}
+
+.collapse-toggle:hover {
+    color: var(--text-primary);
+    border-color: var(--text-secondary);
+}
+
+/* When the Balance History panel is collapsed, the whole row shrinks to
+   the header height and the center-bottom panel with positions/history/
+   activity takes the extra vertical space automatically. */
+.main-grid.chart-collapsed {
+    grid-template-rows: min-content 1fr;
+}
+
+.main-grid.chart-collapsed #balance-chart-container {
+    display: none;
+}
+
+.main-grid.chart-collapsed .panel-balance {
+    padding-bottom: 6px;
+}
+
+.main-grid.chart-collapsed #balance-toggle {
+    transform: rotate(-90deg);
 }
 
 /* Map panel spans 2 rows */

@@ -370,9 +370,29 @@
     function updateBotStatus(status) {
         const el = document.getElementById("bot-status");
         if (status.running) {
-            el.textContent = "Bot: PID " + status.pid;
+            const version = status.version ? " v" + status.version : "";
+            el.textContent = "Bot: PID " + status.pid + version;
         } else {
             el.innerHTML = '<span class="badge badge-stopped">STOPPED</span>';
+        }
+    }
+
+    // =========================================================================
+    // Update Version Tag
+    // =========================================================================
+    function updateVersion(data) {
+        const tag = document.getElementById("version-tag");
+        if (!tag) return;
+        const dashVer = data.version;
+        const botVer  = data.bot_version || (data.bot_status && data.bot_status.version);
+        if (!dashVer) return;
+        tag.textContent = "v" + dashVer;
+        if (botVer && botVer !== dashVer) {
+            tag.classList.add("mismatch");
+            tag.title = `Dashboard v${dashVer} / Bot v${botVer} — version mismatch`;
+        } else {
+            tag.classList.remove("mismatch");
+            tag.title = "WeatherBet v" + dashVer;
         }
     }
 
@@ -380,6 +400,7 @@
     // Full dashboard update
     // =========================================================================
     function updateDashboard(data) {
+        updateVersion(data);
         updateKPIs(data.kpi);
         updateMap(data);
         updateChart(data.balance_history);
@@ -390,6 +411,29 @@
         updateCalibration(data.calibration);
         updateActivity(data.activity || []);
         updateBotStatus(data.bot_status || {});
+    }
+
+    // =========================================================================
+    // Balance History collapse toggle (persisted in localStorage)
+    // =========================================================================
+    function initBalanceCollapse() {
+        const grid = document.querySelector(".main-grid");
+        const btn  = document.getElementById("balance-toggle");
+        if (!grid || !btn) return;
+
+        const STORAGE_KEY = "wbet.balance-collapsed";
+        if (localStorage.getItem(STORAGE_KEY) === "1") {
+            grid.classList.add("chart-collapsed");
+        }
+
+        btn.addEventListener("click", function () {
+            const collapsed = grid.classList.toggle("chart-collapsed");
+            localStorage.setItem(STORAGE_KEY, collapsed ? "1" : "0");
+            // Chart.js needs a resize kick when it becomes visible again.
+            if (!collapsed) {
+                setTimeout(function () { balanceChart.resize(); }, 50);
+            }
+        });
     }
 
     // =========================================================================
@@ -466,6 +510,7 @@
     // =========================================================================
     // Init
     // =========================================================================
+    initBalanceCollapse();
     updateDashboard(DATA);
     connectWebSocket();
 

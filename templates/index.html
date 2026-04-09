@@ -14,6 +14,7 @@
 <div class="status-bar">
     <div class="left">
         <span class="brand">WeatherBet</span>
+        <span class="version" id="version-tag" title="Dashboard version">v{{ data.version }}</span>
         <span class="live-dot live" id="connection-dot"></span>
         <span class="badge badge-live" id="connection-badge">LIVE</span>
         <span class="text-muted" id="last-scan">—</span>
@@ -86,12 +87,15 @@
         </div>
     </div>
 
-    <!-- CENTER TOP: Balance Chart -->
-    <div class="panel">
+    <!-- CENTER TOP: Balance Chart (collapsible) -->
+    <div class="panel panel-balance" id="panel-balance">
         <div class="panel-header">
             <span>Balance History</span>
+            <button class="collapse-toggle" id="balance-toggle"
+                    aria-label="Toggle balance history"
+                    title="Collapse / expand">▼</button>
         </div>
-        <div class="chart-container">
+        <div class="chart-container" id="balance-chart-container">
             <canvas id="balance-chart"></canvas>
         </div>
     </div>

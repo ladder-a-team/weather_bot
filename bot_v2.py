@@ -26,6 +26,8 @@ try:
 except ImportError:  # py<3.9 fallback
     from backports.zoneinfo import ZoneInfo  # type: ignore
 
+from version import __version__
+
 # =============================================================================
 # CONFIG
 # =============================================================================
@@ -533,6 +535,7 @@ def write_heartbeat(last_scan=None, last_monitor=None):
     payload = {
         "ts":           now,
         "pid":          os.getpid(),
+        "version":      __version__,
         "started_at":   _BOT_STARTED_AT.isoformat(),
         "last_scan":    last_scan,
         "last_monitor": last_monitor,
@@ -1180,7 +1183,7 @@ def run_loop():
 
     current_balance = load_state().get("balance", BALANCE)
     print(f"\n{'='*55}")
-    print(f"  WEATHERBET — STARTING")
+    print(f"  WEATHERBET v{__version__} — STARTING")
     print(f"{'='*55}")
     print(f"  Cities:     {len(LOCATIONS)}")
     print(f"  Balance:    ${current_balance:,.2f} | Max bet: ${MAX_BET}")

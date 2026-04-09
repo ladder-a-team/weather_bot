@@ -27,6 +27,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
+from version import __version__
+
 # =============================================================================
 # PATH CONSTANTS
 # =============================================================================
@@ -171,6 +173,7 @@ def check_bot_status() -> dict:
             return {
                 "running":        age_seconds < HEARTBEAT_STALE_SECONDS,
                 "pid":            heartbeat.get("pid"),
+                "version":        heartbeat.get("version"),
                 "cpu_percent":    0.0,
                 "memory_mb":      0.0,
                 "uptime_seconds": uptime_s,
@@ -379,7 +382,13 @@ def build_dashboard_data() -> dict:
     if not balance_history or balance_history[-1]["balance"] != equity:
         balance_history.append({"ts": now_str, "balance": equity})
 
+    bot_version = None
+    if isinstance(bot_status, dict):
+        bot_version = bot_status.get("version")
+
     return {
+        "version": __version__,
+        "bot_version": bot_version,
         "state": state,
         "kpi": {
             "starting_balance": starting,

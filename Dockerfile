@@ -16,7 +16,7 @@ COPY requirements.txt ./
 RUN pip install -r requirements.txt tzdata
 
 # Source + static assets — these change relatively rarely.
-COPY bot_v2.py bot_v1.py dashboard.py ./
+COPY bot_v2.py bot_v1.py dashboard.py version.py ./
 COPY static ./static
 COPY templates ./templates
 COPY data ./data

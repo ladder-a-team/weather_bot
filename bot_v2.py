@@ -12,6 +12,7 @@ Usage:
     python weatherbet.py status   # balance and open positions
 """
 
+import os
 import re
 import sys
 import json
@@ -20,6 +21,10 @@ import time
 import requests
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # py<3.9 fallback
+    from backports.zoneinfo import ZoneInfo  # type: ignore
 
 # =============================================================================
 # CONFIG
@@ -98,13 +103,20 @@ def norm_cdf(x):
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 def bucket_prob(forecast, t_low, t_high, sigma=None):
-    """For regular buckets — exact match. For edge buckets — normal distribution."""
+    """Probability the actual temperature falls inside a bucket, given a
+    forecast and its standard error (sigma). Buckets are rounded to the
+    nearest degree, so the real interval is [low-0.5, high+0.5]."""
     s = sigma or 2.0
+    f = float(forecast)
     if t_low == -999:
-        return norm_cdf((t_high - float(forecast)) / s)
+        # "X or below" — P(T <= high + 0.5)
+        return norm_cdf((t_high + 0.5 - f) / s)
     if t_high == 999:
-        return 1.0 - norm_cdf((t_low - float(forecast)) / s)
-    return 1.0 if in_bucket(forecast, t_low, t_high) else 0.0
+        # "X or higher" — P(T >= low - 0.5)
+        return 1.0 - norm_cdf((t_low - 0.5 - f) / s)
+    lo = t_low - 0.5
+    hi = t_high + 0.5
+    return norm_cdf((hi - f) / s) - norm_cdf((lo - f) / s)
 
 def calc_ev(p, price):
     if price <= 0 or price >= 1: return 0.0
@@ -155,14 +167,16 @@ def run_calibration(markets):
             if len(errors) < CALIBRATION_MIN:
                 continue
             mae  = sum(errors) / len(errors)
+            # For a normal distribution, sigma ≈ MAE * sqrt(pi/2) ≈ 1.2533.
+            # Using MAE directly underestimates sigma and inflates perceived edge.
             key  = f"{city}_{source}"
             old  = cal.get(key, {}).get("sigma", SIGMA_F if LOCATIONS[city]["unit"] == "F" else SIGMA_C)
-            new  = round(mae, 3)
+            new  = round(mae * 1.2533, 3)
             cal[key] = {"sigma": new, "n": len(errors), "updated_at": datetime.now(timezone.utc).isoformat()}
             if abs(new - old) > 0.05:
                 updated.append(f"{LOCATIONS[city]['name']} {source}: {old:.2f}->{new:.2f}")
 
-    CALIBRATION_FILE.write_text(json.dumps(cal, indent=2), encoding="utf-8")
+    _atomic_write_json(CALIBRATION_FILE, cal)
     if updated:
         print(f"  [CAL] {', '.join(updated)}")
     return cal
@@ -354,9 +368,16 @@ def load_market(city_slug, date_str):
         return json.loads(p.read_text(encoding="utf-8"))
     return None
 
+def _atomic_write_json(path: Path, data) -> None:
+    """Write JSON via temp file + rename so a dashboard file-watcher never
+    sees a half-written file."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
 def save_market(market):
     p = market_path(market["city"], market["date"])
-    p.write_text(json.dumps(market, indent=2, ensure_ascii=False), encoding="utf-8")
+    _atomic_write_json(p, market)
 
 def load_all_markets():
     markets = []
@@ -405,7 +426,7 @@ def load_state():
     }
 
 def save_state(state):
-    STATE_FILE.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+    _atomic_write_json(STATE_FILE, state)
 
 def calculate_balance_from_trades():
     """Ground truth balance calculated from market files instead of incremental tracking."""
@@ -430,19 +451,26 @@ def calculate_balance_from_trades():
 # =============================================================================
 
 def take_forecast_snapshot(city_slug, dates):
-    """Fetches forecasts from all sources and returns a snapshot."""
-    now_str = datetime.now(timezone.utc).isoformat()
-    ecmwf   = get_ecmwf(city_slug, dates)
-    hrrr    = get_hrrr(city_slug, dates)
-    today   = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    """Fetches forecasts from all sources and returns a snapshot.
+    `dates` are local-time calendar dates for the city — "today" and the HRRR
+    horizon are evaluated in that same local timezone so the comparisons line
+    up with how the market resolves."""
+    now_str   = datetime.now(timezone.utc).isoformat()
+    ecmwf     = get_ecmwf(city_slug, dates)
+    hrrr      = get_hrrr(city_slug, dates)
+    local_tz  = ZoneInfo(TIMEZONES.get(city_slug, "UTC"))
+    local_now = datetime.now(local_tz)
+    today     = local_now.strftime("%Y-%m-%d")
+    hrrr_cap  = (local_now + timedelta(days=2)).strftime("%Y-%m-%d")
+    metar_val = get_metar(city_slug)  # fetch once per city
 
     snapshots = {}
     for date in dates:
         snap = {
             "ts":    now_str,
             "ecmwf": ecmwf.get(date),
-            "hrrr":  hrrr.get(date) if date <= (datetime.now(timezone.utc) + timedelta(days=2)).strftime("%Y-%m-%d") else None,
-            "metar": get_metar(city_slug) if date == today else None,
+            "hrrr":  hrrr.get(date) if date <= hrrr_cap else None,
+            "metar": metar_val if date == today else None,
         }
         # Best forecast: HRRR for US D+0/D+1, otherwise ECMWF
         loc = LOCATIONS[city_slug]
@@ -473,8 +501,13 @@ def scan_and_update():
         unit_sym = "F" if unit == "F" else "C"
         print(f"  -> {loc['name']}...", end=" ", flush=True)
 
+        # Polymarket weather markets resolve on the city's local day, so the
+        # date horizon must be computed in local time — not UTC — to avoid
+        # off-by-one errors around day boundaries (especially for Asia/Oceania).
         try:
-            dates = [(now + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(4)]
+            local_tz  = ZoneInfo(TIMEZONES.get(city_slug, "UTC"))
+            local_now = datetime.now(local_tz)
+            dates     = [(local_now + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(4)]
             snapshots = take_forecast_snapshot(city_slug, dates)
             time.sleep(0.3)
         except Exception as e:
@@ -513,18 +546,21 @@ def scan_and_update():
                     continue
                 try:
                     prices = json.loads(market.get("outcomePrices", "[0.5,0.5]"))
-                    bid = float(prices[0])
-                    ask = float(prices[1]) if len(prices) > 1 else bid
+                    # Gamma `outcomePrices` is [YES, NO], NOT [bid, ask].
+                    # Real bid/ask come from per-market bestBid/bestAsk, fetched
+                    # during the final entry check. Here we only have a rough
+                    # YES price estimate.
+                    yes_price = float(prices[0])
                 except Exception:
                     continue
                 outcomes.append({
                     "question":  question,
                     "market_id": mid,
                     "range":     rng,
-                    "bid":       round(bid, 4),
-                    "ask":       round(ask, 4),
-                    "price":     round(bid, 4),   # for compatibility
-                    "spread":    round(ask - bid, 4),
+                    "price":     round(yes_price, 4),   # YES price estimate
+                    "bid":       round(yes_price, 4),   # fallback sell-price for monitor/dashboard
+                    "ask":       round(yes_price, 4),   # fallback buy-price (refined later)
+                    "spread":    0.0,                   # unknown until real fetch
                     "volume":    round(volume, 0),
                 })
 
@@ -557,54 +593,33 @@ def scan_and_update():
             forecast_temp = snap.get("best")
             best_source   = snap.get("best_source")
 
-            # --- STOP-LOSS AND TRAILING STOP ---
-            if mkt.get("position") and mkt["position"].get("status") == "open":
-                pos = mkt["position"]
-                current_price = None
-                for o in outcomes:
-                    if o["market_id"] == pos["market_id"]:
-                        current_price = o["price"]
-                        break
+            # Stop-loss / trailing / take-profit are handled by
+            # `monitor_positions` every MONITOR_INTERVAL with real bestBid
+            # prices — duplicating the logic here was drifting out of sync.
 
-                if current_price is not None:
-                    current_price = o.get("bid", current_price)  # sell at bid
-                    entry = pos["entry_price"]
-                    stop  = pos.get("stop_price", entry * 0.80)  # 20% stop by default
-
-                    # Progressive trailing stop
-                    if current_price >= entry * 1.20:
-                        if not pos.get("trailing_activated"):
-                            new_stop = entry  # first activation: breakeven
-                            pos["trailing_activated"] = True
-                        else:
-                            new_stop = round(current_price * 0.80, 4)  # 80% of current
-                        if new_stop > stop:
-                            pos["stop_price"] = new_stop
-
-                    # Check stop
-                    if current_price <= stop:
-                        pnl = round((current_price - entry) * pos["shares"], 2)
-                        balance += pos["cost"] + pnl
-                        pos["closed_at"]    = snap.get("ts")
-                        pos["close_reason"] = "stop_loss" if current_price < entry else "trailing_stop"
-                        pos["exit_price"]   = current_price
-                        pos["pnl"]          = pnl
-                        pos["status"]       = "closed"
-                        closed += 1
-                        reason = "STOP" if current_price < entry else "TRAILING BE"
-                        print(f"  [{reason}] {loc['name']} {date} | entry ${entry:.3f} exit ${current_price:.3f} | PnL: {'+'if pnl>=0 else ''}{pnl:.2f}")
-
-            # --- CLOSE POSITION if forecast shifted 2+ degrees ---
-            if mkt.get("position") and forecast_temp is not None:
+            # --- CLOSE POSITION if forecast shifted beyond the bucket ---
+            if (mkt.get("position")
+                    and mkt["position"].get("status") == "open"
+                    and forecast_temp is not None):
                 pos = mkt["position"]
                 old_bucket_low  = pos["bucket_low"]
                 old_bucket_high = pos["bucket_high"]
-                # 2-degree buffer — avoid closing on small forecast fluctuations
-                unit = loc["unit"]
-                buffer = 2.0 if unit == "F" else 1.0
-                mid_bucket = (old_bucket_low + old_bucket_high) / 2 if old_bucket_low != -999 and old_bucket_high != 999 else forecast_temp
-                forecast_far = abs(forecast_temp - mid_bucket) > (abs(mid_bucket - old_bucket_low) + buffer)
-                if not in_bucket(forecast_temp, old_bucket_low, old_bucket_high) and forecast_far:
+                buffer = 2.0 if loc["unit"] == "F" else 1.0
+
+                if in_bucket(forecast_temp, old_bucket_low, old_bucket_high):
+                    forecast_far = False
+                elif old_bucket_low == -999:
+                    # "at or below X" — close if forecast jumped above X + buffer
+                    forecast_far = forecast_temp > old_bucket_high + buffer
+                elif old_bucket_high == 999:
+                    # "at or above X" — close if forecast dropped below X - buffer
+                    forecast_far = forecast_temp < old_bucket_low - buffer
+                else:
+                    mid        = (old_bucket_low + old_bucket_high) / 2
+                    half_width = (old_bucket_high - old_bucket_low) / 2
+                    forecast_far = abs(forecast_temp - mid) > half_width + buffer
+
+                if forecast_far:
                     current_price = None
                     for o in outcomes:
                         if o["market_id"] == pos["market_id"]:
@@ -676,7 +691,9 @@ def scan_and_update():
                                 }
 
                 if best_signal:
-                    # Fetch real bestAsk from Polymarket API for accurate entry price
+                    # Fetch real bestAsk/bestBid from Polymarket for accurate
+                    # entry, then fully re-validate EV, Kelly, and size against
+                    # the real price — first-pass used stale outcome data.
                     skip_position = False
                     try:
                         r = requests.get(f"https://gamma-api.polymarket.com/markets/{best_signal['market_id']}", timeout=(3, 5))
@@ -684,18 +701,31 @@ def scan_and_update():
                         real_ask = float(mdata.get("bestAsk", best_signal["entry_price"]))
                         real_bid = float(mdata.get("bestBid", best_signal["bid_at_entry"]))
                         real_spread = round(real_ask - real_bid, 4)
-                        # Re-check slippage and price with real values
-                        if real_spread > MAX_SLIPPAGE or real_ask >= MAX_PRICE:
+
+                        if real_spread > MAX_SLIPPAGE or real_ask >= MAX_PRICE or real_ask <= 0:
                             print(f"  [SKIP] {loc['name']} {date} — real ask ${real_ask:.3f} spread ${real_spread:.3f}")
                             skip_position = True
                         else:
-                            best_signal["entry_price"]  = real_ask
-                            best_signal["bid_at_entry"] = real_bid
-                            best_signal["spread"]       = real_spread
-                            best_signal["shares"]       = round(best_signal["cost"] / real_ask, 2)
-                            best_signal["ev"]           = round(calc_ev(best_signal["p"], real_ask), 4)
+                            real_ev    = calc_ev(best_signal["p"], real_ask)
+                            real_kelly = calc_kelly(best_signal["p"], real_ask)
+                            real_size  = bet_size(real_kelly, balance)
+                            if real_ev < MIN_EV:
+                                print(f"  [SKIP] {loc['name']} {date} — real EV {real_ev:+.2f} below threshold")
+                                skip_position = True
+                            elif real_size < 0.50:
+                                print(f"  [SKIP] {loc['name']} {date} — real size ${real_size:.2f} too small")
+                                skip_position = True
+                            else:
+                                best_signal["entry_price"]  = real_ask
+                                best_signal["bid_at_entry"] = real_bid
+                                best_signal["spread"]       = real_spread
+                                best_signal["cost"]         = real_size
+                                best_signal["shares"]       = round(real_size / real_ask, 2)
+                                best_signal["ev"]           = round(real_ev, 4)
+                                best_signal["kelly"]        = round(real_kelly, 4)
                     except Exception as e:
                         print(f"  [WARN] Could not fetch real ask for {best_signal['market_id']}: {e}")
+                        skip_position = True
 
                     if not skip_position and best_signal["entry_price"] < MAX_PRICE:
                         balance -= best_signal["cost"]
@@ -771,7 +801,6 @@ def scan_and_update():
     all_mkts = load_all_markets()
     resolved_count = len([m for m in all_mkts if m["status"] == "resolved"])
     if resolved_count >= CALIBRATION_MIN:
-        global _cal
         _cal = run_calibration(all_mkts)
 
     return new_pos, closed, resolved
@@ -984,11 +1013,12 @@ def run_loop():
     global _cal
     _cal = load_cal()
 
+    current_balance = load_state().get("balance", BALANCE)
     print(f"\n{'='*55}")
     print(f"  WEATHERBET — STARTING")
     print(f"{'='*55}")
     print(f"  Cities:     {len(LOCATIONS)}")
-    print(f"  Balance:    ${BALANCE:,.0f} | Max bet: ${MAX_BET}")
+    print(f"  Balance:    ${current_balance:,.2f} | Max bet: ${MAX_BET}")
     print(f"  Scan:       {SCAN_INTERVAL//60} min | Monitor: {MONITOR_INTERVAL//60} min")
     print(f"  Sources:    ECMWF + HRRR(US) + METAR(D+0)")
     print(f"  Data:       {DATA_DIR.resolve()}")

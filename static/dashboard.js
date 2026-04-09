@@ -7,6 +7,100 @@
     let ws = null;
     let reconnectDelay = 1000;
 
+    // ---- Last-received data snapshot (so sort clicks can re-render
+    //      without waiting for the next WebSocket/poll tick). ----
+    let lastData = DATA;
+
+    // ---- Sortable table state ----
+    // Each entry: { column: <string|null>, dir: 1|-1 }. Null column = no
+    // explicit sort (default rendering order).
+    const sortState = {
+        positions: { column: null, dir:  1 },
+        history:   { column: "closed_at", dir: -1 }, // most recent first by default
+        forecasts: { column: null, dir:  1 },
+    };
+
+    // Comparators per (table, column). Each returns a sortable value.
+    const SORT_KEYS = {
+        positions: {
+            city:   p => (p.city_name || p.city || "").toLowerCase(),
+            bucket: p => Number(p.bucket_low ?? 0),
+            entry:  p => Number(p.entry_price ?? 0),
+            ev:     p => Number(p.ev ?? 0),
+            kelly:  p => Number(p.kelly ?? 0),
+            pnl:    p => Number(p.pnl ?? 0),
+        },
+        history: {
+            city:    t => (t.city_name || t.city || "").toLowerCase(),
+            date:    t => t.date || "",
+            entry:   t => Number(t.entry_price ?? 0),
+            reason:  t => (t.close_reason || "").toLowerCase(),
+            pnl:     t => Number(t.pnl ?? 0),
+            closed_at: t => t.closed_at || "",
+        },
+        forecasts: {
+            city:  f => (f.city || "").toLowerCase(),
+            ecmwf: f => Number.isFinite(f.ecmwf) ? f.ecmwf : -Infinity,
+            hrrr:  f => Number.isFinite(f.hrrr)  ? f.hrrr  : -Infinity,
+            metar: f => Number.isFinite(f.metar) ? f.metar : -Infinity,
+            best:  f => Number.isFinite(f.best)  ? f.best  : -Infinity,
+        },
+    };
+
+    function applySort(tableName, rows) {
+        const st = sortState[tableName];
+        if (!st || !st.column) return rows;
+        const keyFn = (SORT_KEYS[tableName] || {})[st.column];
+        if (!keyFn) return rows;
+        const dir = st.dir;
+        return [...rows].sort((a, b) => {
+            const av = keyFn(a);
+            const bv = keyFn(b);
+            if (av < bv) return -1 * dir;
+            if (av > bv) return  1 * dir;
+            return 0;
+        });
+    }
+
+    function updateHeaderIndicators() {
+        document.querySelectorAll(".col-sort").forEach(el => {
+            el.classList.remove("sort-asc", "sort-desc");
+        });
+        for (const [table, st] of Object.entries(sortState)) {
+            if (!st.column) continue;
+            const header = document.querySelector(`[data-table="${table}"]`);
+            if (!header) continue;
+            const el = header.querySelector(`[data-col="${st.column}"]`);
+            if (el) el.classList.add(st.dir > 0 ? "sort-asc" : "sort-desc");
+        }
+    }
+
+    function initTableSorting() {
+        document.querySelectorAll("[data-table]").forEach(header => {
+            const table = header.dataset.table;
+            header.querySelectorAll(".col-sort").forEach(span => {
+                span.addEventListener("click", () => {
+                    const col = span.dataset.col;
+                    const st  = sortState[table];
+                    if (st.column === col) {
+                        st.dir = -st.dir;
+                    } else {
+                        st.column = col;
+                        st.dir = 1;
+                    }
+                    updateHeaderIndicators();
+                    // Re-render using the last snapshot we have.
+                    if (lastData) {
+                        if (table === "positions") updatePositions(lastData.open_positions || []);
+                        if (table === "history")   updateHistory(lastData.closed_positions || []);
+                        if (table === "forecasts") updateForecasts(lastData.forecasts || []);
+                    }
+                });
+            });
+        });
+        updateHeaderIndicators();
+    }
+
     // =========================================================================
     // Leaflet Map
     // =========================================================================
@@ -246,6 +340,8 @@
             return;
         }
 
+        positions = applySort("positions", positions);
+
         let html = "";
         for (const p of positions) {
             const pnl = p.pnl ?? 0;
@@ -276,6 +372,8 @@
             body.innerHTML = '<div class="empty-state">Waiting for first scan...</div>';
             return;
         }
+
+        forecasts = applySort("forecasts", forecasts);
 
         let html = "";
         for (const f of forecasts) {
@@ -329,6 +427,8 @@
             body.innerHTML = '<div class="empty-state">No closed trades yet</div>';
             return;
         }
+
+        trades = applySort("history", trades);
 
         let html = "";
         for (const t of trades) {
@@ -400,6 +500,7 @@
     // Full dashboard update
     // =========================================================================
     function updateDashboard(data) {
+        lastData = data;
         updateVersion(data);
         updateKPIs(data.kpi);
         updateMap(data);
@@ -570,6 +671,7 @@
     // =========================================================================
     initBalanceCollapse();
     initAdminButtons();
+    initTableSorting();
     updateDashboard(DATA);
     connectWebSocket();
 

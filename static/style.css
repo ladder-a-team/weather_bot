@@ -24,10 +24,17 @@ body {
     color: var(--text-primary);
     overflow: hidden;
     height: 100vh;
+    /* Column flex so main-grid naturally fills the space left by status
+       bar + KPI strip without hardcoding pixel offsets (which broke
+       scrolling inside the position / history / activity panels any time
+       those two rows weren't exactly 80 px tall). */
+    display: flex;
+    flex-direction: column;
 }
 
 /* ---- Status Bar ---- */
 .status-bar {
+    flex-shrink: 0;
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -100,6 +107,53 @@ body {
     border-color: var(--accent-green);
 }
 
+/* ---- Sortable column headers ---- */
+.col-sort {
+    cursor: pointer;
+    user-select: none;
+    position: relative;
+    transition: color 0.15s;
+}
+
+.col-sort:hover {
+    color: var(--text-primary);
+}
+
+.col-sort::after {
+    content: "";
+    display: inline-block;
+    width: 0;
+    height: 0;
+    margin-left: 4px;
+    border-left: 3px solid transparent;
+    border-right: 3px solid transparent;
+    vertical-align: middle;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+.col-sort:hover::after {
+    opacity: 0.35;
+    border-top: 4px solid currentColor;
+}
+
+.col-sort.sort-asc::after {
+    opacity: 1;
+    border-bottom: 4px solid var(--accent-blue);
+    border-top: 0;
+}
+
+.col-sort.sort-desc::after {
+    opacity: 1;
+    border-top: 4px solid var(--accent-blue);
+    border-bottom: 0;
+}
+
+.col-sort.sort-asc,
+.col-sort.sort-desc {
+    color: var(--text-primary);
+}
+
 .status-bar .left, .status-bar .right {
     display: flex;
     align-items: center;
@@ -152,6 +206,7 @@ body {
 
 /* ---- KPI Strip ---- */
 .kpi-strip {
+    flex-shrink: 0;
     display: grid;
     grid-template-columns: repeat(8, 1fr);
     gap: 1px;
@@ -191,12 +246,13 @@ body {
 
 /* ---- Main Grid ---- */
 .main-grid {
+    flex: 1;
+    min-height: 0;              /* allow flex child to shrink below content */
     display: grid;
     grid-template-columns: 1fr 1.5fr 1fr;
     grid-template-rows: 1fr 1fr;
     gap: 1px;
     background: var(--border);
-    height: calc(100vh - 80px); /* status bar + kpi strip */
 }
 
 /* ---- Panels ---- */

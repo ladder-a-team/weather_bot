@@ -110,8 +110,12 @@
             <span>Forecast Sources</span>
         </div>
         <div class="forecast-table">
-            <div class="forecast-header">
-                <span>City</span><span>ECMWF</span><span>HRRR</span><span>METAR</span><span>Best</span>
+            <div class="forecast-header" data-table="forecasts">
+                <span class="col-sort" data-col="city">City</span>
+                <span class="col-sort" data-col="ecmwf">ECMWF</span>
+                <span class="col-sort" data-col="hrrr">HRRR</span>
+                <span class="col-sort" data-col="metar">METAR</span>
+                <span class="col-sort" data-col="best">Best</span>
             </div>
             <div class="forecast-body" id="forecast-body">
                 {% for f in data.forecasts %}
@@ -167,8 +171,13 @@
             <span class="count" id="positions-count">{{ data.open_positions|length }} active</span>
         </div>
         <div class="positions-table">
-            <div class="table-header">
-                <span>City</span><span>Bucket</span><span>Entry → Now</span><span>EV</span><span>Kelly</span><span>P&L</span>
+            <div class="table-header" data-table="positions">
+                <span class="col-sort" data-col="city">City</span>
+                <span class="col-sort" data-col="bucket">Bucket</span>
+                <span class="col-sort" data-col="entry">Entry → Now</span>
+                <span class="col-sort" data-col="ev">EV</span>
+                <span class="col-sort" data-col="kelly">Kelly</span>
+                <span class="col-sort" data-col="pnl">P&L</span>
             </div>
             <div class="table-body" id="positions-body">
                 {% for p in data.open_positions %}
@@ -194,8 +203,12 @@
             <span class="count" id="history-count">{{ data.closed_positions|length }} closed</span>
         </div>
         <div class="history-table">
-            <div class="history-header">
-                <span>City</span><span>Date</span><span>Entry → Exit</span><span>Reason</span><span>P&L</span>
+            <div class="history-header" data-table="history">
+                <span class="col-sort" data-col="city">City</span>
+                <span class="col-sort" data-col="date">Date</span>
+                <span class="col-sort" data-col="entry">Entry → Exit</span>
+                <span class="col-sort" data-col="reason">Reason</span>
+                <span class="col-sort" data-col="pnl">P&L</span>
             </div>
             <div class="history-body" id="history-body">
                 {% for t in data.closed_positions %}

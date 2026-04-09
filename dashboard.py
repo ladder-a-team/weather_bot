@@ -487,6 +487,97 @@ async def api_bot_status():
 async def api_dashboard():
     return build_dashboard_data()
 
+
+# ---------------------------------------------------------------------------
+# Admin endpoints
+#
+# These are intentionally unauthenticated — the dashboard is assumed to be
+# reachable only from a trusted local network / Docker host. If the service
+# is ever exposed publicly, wrap these behind a shared secret header check.
+# ---------------------------------------------------------------------------
+
+RESCAN_REQUEST_FILE = DATA_DIR / "rescan.request"
+
+
+def _touch_rescan_trigger(reason: str) -> None:
+    """Drop a file the bot polls for, which short-circuits its sleep and
+    forces a full scan on the next tick."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    RESCAN_REQUEST_FILE.write_text(reason, encoding="utf-8")
+
+
+@app.post("/api/admin/rescan")
+async def api_admin_rescan():
+    """Force the bot to run a full market scan on its next poll tick."""
+    _touch_rescan_trigger("manual")
+    return {"ok": True, "action": "rescan_requested"}
+
+
+@app.post("/api/admin/reset")
+async def api_admin_reset():
+    """Wipe all bot runtime state so the next scan starts from zero.
+
+    Deletes: every market JSON, state.json, calibration.json.
+    Keeps: heartbeat.json (so the bot-status tile stays accurate) and
+    the data/.gitkeep placeholders.
+
+    Also clears in-memory dashboard caches so the UI doesn't briefly
+    show stale values from the capped deques while the bot rebuilds
+    everything."""
+    deleted = 0
+    for path in MARKETS_DIR.glob("*.json"):
+        try:
+            path.unlink()
+            deleted += 1
+        except Exception:
+            pass
+
+    for path in (STATE_FILE, CALIBRATION_FILE):
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    # Seed a fresh state.json from config.json so the KPI strip reads
+    # the proper starting balance immediately instead of briefly flashing
+    # $0 until the bot completes its next scan and calls save_state().
+    try:
+        with open(BASE_DIR / "config.json", encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        starting = float(cfg.get("balance", 10000.0))
+    except Exception:
+        starting = 10000.0
+    fresh_state = {
+        "balance":          starting,
+        "starting_balance": starting,
+        "total_trades":     0,
+        "wins":             0,
+        "losses":           0,
+        "peak_balance":     starting,
+    }
+    try:
+        STATE_FILE.write_text(json.dumps(fresh_state, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+    # Reset in-memory dashboard state so the next /api/dashboard call
+    # computes everything from the now-empty disk.
+    balance_history.clear()
+    activity_feed.clear()
+    _market_cache.clear()
+    previous_markets.clear()
+
+    # Kick the bot so it runs a fresh scan right away.
+    _touch_rescan_trigger("reset")
+
+    # Push an empty-state update to any connected WebSocket clients.
+    try:
+        await broadcast({"type": "full_update", "data": build_dashboard_data()})
+    except Exception:
+        pass
+
+    return {"ok": True, "markets_deleted": deleted}
+
 # ---------------------------------------------------------------------------
 # WebSocket
 # ---------------------------------------------------------------------------

@@ -1078,7 +1078,38 @@ def print_report():
 # MAIN LOOP
 # =============================================================================
 
-MONITOR_INTERVAL = 600  # monitor positions every 10 minutes
+MONITOR_INTERVAL   = 600  # monitor positions every 10 minutes
+RESCAN_POLL_SECS   = 5    # check for the rescan trigger file this often
+RESCAN_REQUEST_FILE = DATA_DIR / "rescan.request"
+
+def consume_rescan_request() -> bool:
+    """Return True (and remove the trigger) if a rescan was requested via
+    the data/rescan.request file. The dashboard creates this file when the
+    user clicks the Rescan or Reset button."""
+    try:
+        if RESCAN_REQUEST_FILE.exists():
+            RESCAN_REQUEST_FILE.unlink(missing_ok=True)
+            return True
+    except Exception as e:
+        print(f"  [RESCAN] failed to read trigger: {e}")
+    return False
+
+def sleep_or_trigger(total_seconds: int) -> bool:
+    """Sleep in small chunks, returning early (True) if a rescan trigger
+    file appears. Does NOT consume the file — the main loop consumes it
+    on the next iteration so the "manual rescan requested" log line
+    actually fires. Lets the bot react to a dashboard click within
+    ~RESCAN_POLL_SECS instead of the full MONITOR_INTERVAL."""
+    slept = 0
+    while slept < total_seconds:
+        try:
+            if RESCAN_REQUEST_FILE.exists():
+                return True
+        except Exception:
+            pass
+        time.sleep(min(RESCAN_POLL_SECS, total_seconds - slept))
+        slept += RESCAN_POLL_SECS
+    return False
 
 def monitor_positions():
     """Quick stop check on open positions without full scan."""
@@ -1199,7 +1230,14 @@ def run_loop():
         now_ts  = time.time()
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Full scan once per hour
+        # A dashboard-issued rescan trigger consumed here short-circuits
+        # the scan-interval gate so the next full scan runs immediately.
+        manual_rescan = consume_rescan_request()
+        if manual_rescan:
+            print(f"[{now_str}] manual rescan requested via dashboard")
+            last_full_scan = 0
+
+        # Full scan once per hour, or on manual rescan
         if now_ts - last_full_scan >= SCAN_INTERVAL:
             print(f"[{now_str}] full scan...")
             try:
@@ -1234,8 +1272,12 @@ def run_loop():
             except Exception as e:
                 print(f"  Monitor error: {e}")
 
+        # Chunked sleep so a rescan trigger wakes us up within seconds
+        # instead of blocking on a full MONITOR_INTERVAL.
         try:
-            time.sleep(MONITOR_INTERVAL)
+            if sleep_or_trigger(MONITOR_INTERVAL):
+                # Loop head handles the trigger on the next iteration.
+                continue
         except KeyboardInterrupt:
             print(f"\n  Stopping — saving state...")
             save_state(load_state())

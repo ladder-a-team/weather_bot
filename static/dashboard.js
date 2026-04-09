@@ -414,6 +414,64 @@
     }
 
     // =========================================================================
+    // Admin buttons — Rescan / Reset
+    // =========================================================================
+    async function postAdmin(path, btn, successLabel) {
+        const original = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = "…";
+        try {
+            const resp = await fetch(path, { method: "POST" });
+            if (!resp.ok) throw new Error("HTTP " + resp.status);
+            const data = await resp.json();
+            btn.classList.add("success");
+            btn.textContent = successLabel || "OK";
+            setTimeout(function () {
+                btn.classList.remove("success");
+                btn.textContent = original;
+                btn.disabled = false;
+            }, 1500);
+            return data;
+        } catch (err) {
+            btn.textContent = "ERR";
+            console.error(path, err);
+            setTimeout(function () {
+                btn.textContent = original;
+                btn.disabled = false;
+            }, 1500);
+            return null;
+        }
+    }
+
+    function initAdminButtons() {
+        const rescanBtn = document.getElementById("rescan-btn");
+        const resetBtn  = document.getElementById("reset-btn");
+
+        if (rescanBtn) {
+            rescanBtn.addEventListener("click", async function () {
+                if (!confirm("Force a full market scan now?\n\nThe bot will rescan every city on its next poll tick (within ~5 seconds).")) return;
+                await postAdmin("/api/admin/rescan", rescanBtn, "QUEUED");
+            });
+        }
+
+        if (resetBtn) {
+            resetBtn.addEventListener("click", async function () {
+                const warn =
+                    "RESET will permanently delete:\n" +
+                    "  • every market JSON (all positions, trades, forecasts)\n" +
+                    "  • state.json (balance, counters)\n" +
+                    "  • calibration.json (learned σ per city)\n\n" +
+                    "The bot will start over from its config starting balance.\n" +
+                    "This cannot be undone.\n\n" +
+                    "Are you sure?";
+                if (!confirm(warn)) return;
+                if (!confirm("Really delete everything and start over?")) return;
+                await postAdmin("/api/admin/reset", resetBtn, "CLEARED");
+            });
+        }
+    }
+
+    // =========================================================================
     // Balance History collapse toggle (persisted in localStorage)
     // =========================================================================
     function initBalanceCollapse() {
@@ -511,6 +569,7 @@
     // Init
     // =========================================================================
     initBalanceCollapse();
+    initAdminButtons();
     updateDashboard(DATA);
     connectWebSocket();
 

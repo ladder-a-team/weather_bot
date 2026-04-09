@@ -59,6 +59,47 @@ body {
     border-color: var(--accent-yellow);
 }
 
+/* ---- Admin buttons (Rescan / Reset) ---- */
+.admin-btn {
+    background: var(--bg-main);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-family: var(--font-ui);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    padding: 3px 10px;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.admin-btn:hover {
+    color: var(--accent-blue);
+    border-color: var(--accent-blue);
+    background: rgba(88, 166, 255, 0.08);
+}
+
+.admin-btn:active {
+    transform: translateY(1px);
+}
+
+.admin-btn:disabled {
+    opacity: 0.5;
+    cursor: wait;
+}
+
+.admin-btn-danger:hover {
+    color: var(--accent-red);
+    border-color: var(--accent-red);
+    background: rgba(248, 81, 73, 0.08);
+}
+
+.admin-btn.success {
+    color: var(--accent-green);
+    border-color: var(--accent-green);
+}
+
 .status-bar .left, .status-bar .right {
     display: flex;
     align-items: center;

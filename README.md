@@ -132,6 +132,60 @@ Open `http://localhost:8050` in your browser.
 
 ---
 
+## Docker
+
+A `Dockerfile` and `docker-compose.yml` are provided to run the bot and dashboard side by side in containers.
+
+### Requirements
+
+- Docker 20.10+ with Docker Compose v2 (`docker compose`, not the legacy `docker-compose`)
+
+### Quick start
+
+```bash
+# Build both images and start the services in the background.
+docker compose up -d --build
+
+# Tail the bot log (scans, trades, monitor ticks).
+docker compose logs -f bot
+
+# Tail the dashboard log.
+docker compose logs -f dashboard
+
+# Stop everything (state persists in ./data).
+docker compose down
+```
+
+Open `http://localhost:8050` while the containers are running.
+
+### What the services do
+
+- **bot** — runs `python -u bot_v2.py`, scans every hour, monitors positions every 10 minutes. Writes market JSONs, `state.json`, and `calibration.json` to `./data`.
+- **dashboard** — runs `python dashboard.py --host 0.0.0.0 --port 8050` and serves the operations center on port 8050. Watches `./data` for changes and pushes updates via WebSocket.
+
+Both containers share the same image and mount the host's `./data` directory, so restarts are non-destructive and the dashboard sees the bot's writes immediately.
+
+### Editing config
+
+`config.json` is mounted into both containers read-only. Edit it on the host and restart only the bot:
+
+```bash
+docker compose restart bot
+```
+
+No rebuild is needed for config changes — only for code changes.
+
+### Useful commands
+
+```bash
+docker compose ps                          # service status
+docker compose exec bot python bot_v2.py status   # status report inside the bot container
+docker compose exec bot python bot_v2.py report   # full report
+docker compose down -v                     # stop and wipe volumes (keeps ./data on host)
+```
+
+---
+
 ## Data Storage
 
 All data is saved to `data/markets/` — one JSON file per market. Each file contains:

@@ -1,0 +1,44 @@
+# WeatherBet — bot and dashboard running side by side.
+#
+# Both services share the same built image and the same `data/` volume,
+# so the bot writes market JSONs and the dashboard watches them live.
+#
+# Start everything:
+#     docker compose up -d --build
+#
+# Watch the bot log:
+#     docker compose logs -f bot
+#
+# Dashboard:
+#     http://localhost:8050
+#
+# To stop:
+#     docker compose down
+
+services:
+  bot:
+    build: .
+    image: weatherbet:latest
+    container_name: weatherbet-bot
+    command: ["python", "-u", "bot_v2.py"]
+    volumes:
+      # Persist bot state (markets, state.json, calibration) on the host.
+      - ./data:/app/data
+      # Override the in-image config.json without rebuilding.
+      - ./config.json:/app/config.json:ro
+    restart: unless-stopped
+
+  dashboard:
+    # Reuse the image built by the `bot` service.
+    image: weatherbet:latest
+    build: .
+    container_name: weatherbet-dashboard
+    command: ["python", "-u", "dashboard.py", "--host", "0.0.0.0", "--port", "8050"]
+    ports:
+      - "8050:8050"
+    volumes:
+      - ./data:/app/data
+      - ./config.json:/app/config.json:ro
+    restart: unless-stopped
+    depends_on:
+      - bot

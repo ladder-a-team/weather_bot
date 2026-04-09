@@ -1,0 +1,24 @@
+.git
+.gitignore
+.github
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv
+venv
+env
+.env
+.DS_Store
+nohup.out
+docs
+README.md
+LICENSE
+sim_dashboard_repost.html
+# Don't ship the host's runtime state into the image — the compose
+# volume mount supplies a fresh data/ at runtime.
+data/markets/*
+!data/markets/.gitkeep
+data/state.json
+data/calibration.json

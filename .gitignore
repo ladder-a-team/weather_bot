@@ -201,8 +201,13 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
-# WeatherBet runtime state
-data/
+# WeatherBet runtime state — keep the directory skeleton but ignore
+# everything inside so a fresh clone has somewhere to write.
+data/*
+!data/.gitkeep
+!data/markets/
+data/markets/*
+!data/markets/.gitkeep
 nohup.out
 
 # Marimo
